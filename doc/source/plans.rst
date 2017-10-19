@@ -51,8 +51,10 @@ documentation.
    scan_nd
    spiral
    spiral_fermat
+   spiral_square
    rel_spiral
    rel_spiral_fermat
+   rel_spiral_square
    adaptive_scan
    rel_adaptive_scan
    tune_centroid
@@ -257,8 +259,10 @@ A fermat spiral:
 
    spiral
    spiral_fermat
+   spiral_square
    rel_spiral
    rel_spiral_fermat
+   rel_spiral_square
 
 Adaptive scans
 --------------
