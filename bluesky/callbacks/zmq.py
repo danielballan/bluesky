@@ -1,10 +1,8 @@
 import asyncio
 import copy
-import multiprocessing
 import os
 import pickle
 import socket
-import time
 from ..run_engine import Dispatcher, DocumentNames
 from ..utils import apply_to_dict_recursively, sanitize_np
 
@@ -133,7 +131,7 @@ class Proxy:
                 out_port = backend.bind_to_random_port("tcp://*")
             else:
                 backend.bind("tcp://*:%d" % out_port)
-        except:
+        except BaseException:
             # Clean up whichever components we have defined so far.
             try:
                 frontend.close()

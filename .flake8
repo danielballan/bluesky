@@ -1,0 +1,12 @@
+[flake8]
+ignore =
+    C901,  # complains when functions are too long
+exclude =
+    .git,
+    __pycache__,
+    bluesky/_version.py,
+    build,
+    dist
+    doc/source/conf.py,
+    versioneer.py,
+max-complexity = 10

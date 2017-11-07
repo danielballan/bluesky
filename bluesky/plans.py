@@ -634,7 +634,7 @@ def tune_centroid(
         raise ValueError("min_step must be positive")
     if step_factor <= 0:
         raise ValueError("step_factor must be positive")
-    if (num - 2) <= 2*step_factor:
+    if (num - 2) <= 2 * step_factor:
         raise ValueError(
             "Increase num and/or decrease step_factor"
             " or tune_centroid will never converge to a solution"
@@ -696,9 +696,9 @@ def tune_centroid(
                     return
                 peak_position = sum_xI / sum_I  # centroid
                 # improvement: report current peak_position somehow
-                start = np.clip(peak_position - step_factor*step,
+                start = np.clip(peak_position - step_factor * step,
                                 low_limit, high_limit)
-                stop = np.clip(peak_position + step_factor*step,
+                stop = np.clip(peak_position + step_factor * step,
                                low_limit, high_limit)
                 if snake:
                     start, stop = stop, start

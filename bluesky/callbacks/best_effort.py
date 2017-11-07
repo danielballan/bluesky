@@ -279,9 +279,10 @@ class BestEffortCallback(CallbackBase):
                                        extents[0][1] + y_step / 2]
                     for I_key, ax in zip(columns, axes):
                         # MAGIC NUMBERS based on what tacaswell thinks looks OK
-                        data_aspect_ratio = np.abs(data_range[1]/data_range[0])
+                        data_aspect_ratio = np.abs(data_range[1] / 
+                                                   data_range[0])
                         MAR = 2
-                        if (1/MAR < data_aspect_ratio < MAR):
+                        if (1 / MAR < data_aspect_ratio < MAR):
                             aspect = 'equal'
                             ax.set_aspect(aspect, adjustable='box-forced')
                         else:

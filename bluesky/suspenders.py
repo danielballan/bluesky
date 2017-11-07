@@ -159,7 +159,7 @@ class SuspenderBase(metaclass=ABCMeta):
 
                 def local():
                     ts = ((datetime.now() + timedelta(seconds=sleep))
-                           .strftime('%Y-%m-%d %H:%M:%S'))
+                          .strftime('%Y-%m-%d %H:%M:%S'))
                     print("Suspender {!r} reports a return to nominal "
                           "conditions. Will sleep for {} seconds and then "
                           "release suspension at {}.".format(self, sleep, ts))

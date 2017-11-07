@@ -1,9 +1,11 @@
+import numpy as np
+import time as ttime
 import warnings
+
 from .utils import Msg
 
-
 try:
-    import ophyd.sim
+    import ophyd.sim  # noqa
 except ImportError:
     raise ImportError("""
 The simulated hardware objects in the bluesky.examples module have been
@@ -13,7 +15,7 @@ else:
 The simulated hardware objects in the bluesky.examples module have been
 moved to ophyd.sim. Update imports to suppress this warning.
     """)
-    from ophyd.sim import *
+    from ophyd.sim import *  # noqa
 
 
 # These are very old, raw implementations of 'plans' the pre-date the

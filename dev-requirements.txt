@@ -3,6 +3,7 @@ coverage
 databroker
 doct
 doctr
+flake8
 ipython
 ipywidgets
 jinja2

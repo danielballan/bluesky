@@ -314,7 +314,8 @@ def run_fuzz():
     create_messages = ([Msg('create')] * 5 +
                        [Msg('create', name=unique_name()) for _ in range(5)])
     save_messages = [Msg('save')] * 10
-    sleep_messages = [Msg('sleep', None, random.random() * 0.25) for _ in range(10)]
+    sleep_messages = [Msg('sleep', None, random.random() * 0.25)
+                      for _ in range(10)]
     pause_messages = [Msg('pause')] * 10
     null_messages = [Msg('null')] * 10
     configure_messages = [Msg('configure', obj, d={}) for obj in all_objects
@@ -337,7 +338,7 @@ def run_fuzz():
           set([msg.command for msg in message_objects]))
 
     num_message = 100
-    num_SIGINT = 10
+    # num_SIGINT = 10
     num_scans = 50
     num_shuffled_scans = 50
     random.shuffle(message_objects)

@@ -1,10 +1,11 @@
-from .core import (CallbackBase, CallbackCounter, print_metadata, collector,
-                   get_obj_fields, CollectThenCompute, LiveTable)
-from .fitting import LiveFit
+from .core import (CallbackBase, CallbackCounter, print_metadata,  # noqa
+                   collector, get_obj_fields, CollectThenCompute,  # noqa
+                   LiveTable)  # noqa
+from .fitting import LiveFit  # noqa
 try:
-    import matplotlib
+    import matplotlib  # noqa
 except ImportError:
     ...
 else:
-    from .mpl_plotting import (LiveScatter, LivePlot, LiveGrid,
-                               LiveFitPlot, LiveRaster, LiveMesh)
+    from .mpl_plotting import (LiveScatter, LivePlot, LiveGrid,  # noqa
+                               LiveFitPlot, LiveRaster, LiveMesh)  # noqa

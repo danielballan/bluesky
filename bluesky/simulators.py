@@ -74,7 +74,7 @@ def summarize_plan(plan):
 
 
 
-print_summary = summarize_plan  # back-compat
+print_summary = summarize_plan  # noqa; back-compat
 
 
 class LimitsExceeded(Exception):
@@ -102,7 +102,8 @@ def check_limits(plan):
             try:
                 low, high = msg.obj.limits
             except AttributeError:
-                warn("Limits of {} are unknown and can't be checked.".format(msg.obj.name))
+                warn("Limits of {} are unknown and can't be checked."
+                     "".format(msg.obj.name))
                 ignore.append(msg.obj)
                 continue
             if low == high:

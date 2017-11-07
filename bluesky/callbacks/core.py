@@ -3,21 +3,20 @@ Useful callbacks for the Run Engine
 """
 from itertools import count
 import warnings
-from collections import deque, namedtuple, OrderedDict, ChainMap
+from collections import deque, namedtuple, OrderedDict
 import time as ttime
 
 from datetime import datetime
-import numpy as np
 import logging
 from ..utils import ensure_uid
 logger = logging.getLogger(__name__)
 
 # back-compat
 try:
-    import matplotlib
+    import matplotlib  # noqa
 except ImportError:
-    from .mpl_plotting import (LiveScatter, LivePlot, LiveGrid,
-                               LiveFitPlot, LiveRaster, LiveMesh)
+    from .mpl_plotting import (LiveScatter, LivePlot, LiveGrid,  # noqa
+                               LiveFitPlot, LiveRaster, LiveMesh)  # noqq
 
 
 class CallbackBase:

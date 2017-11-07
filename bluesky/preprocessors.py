@@ -435,7 +435,7 @@ def finalize_wrapper(plan, final_plan, *, pause_for_debug=False):
     except GeneratorExit:
         cleanup = False
         raise
-    except:
+    except BaseException:
         if pause_for_debug:
             yield from pause()
         raise

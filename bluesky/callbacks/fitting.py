@@ -1,5 +1,5 @@
-from cycler import cycler
 import numpy as np
+import warnings
 
 from .core import CallbackBase, CollectThenCompute
 
@@ -108,8 +108,8 @@ class LiveFit(CallbackBase):
     def update_fit(self):
         N = len(self.model.param_names)
         if len(self.ydata) < N:
-            warnings.warn("LiveFitPlot cannot update fit until there are at least {} "
-                          "data points".format(N))
+            warnings.warn("LiveFitPlot cannot update fit until there are at "
+                          "least {} data points".format(N))
         else:
             kwargs = {}
             kwargs.update(self.independent_vars_data)
