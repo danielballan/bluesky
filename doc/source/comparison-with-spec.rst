@@ -98,6 +98,8 @@ Our key arguments are:
   to have to specify every time, including a list of supplemental readings to
   be taken or tasks to be executed during every plan, persistent metadata, and
   a list of destinations for the live stream of data and metadata.
+* Various ways one might think of omitting ``RE(...)`` for the sake of brevity
+  cause more harm that good.
 
 If you are still feeling skeptical that this design choice is technically
 justified, we offer the following Socratic dialogue, tongue in cheek.
@@ -176,8 +178,8 @@ awhile and found that it created more problems that it solved.
 Socrates: Hmm. You're my best student, Plato. Surely you are smart enough to
 figure out a way that I won't have to type RE.
 
-Plato:
+Plato: TODO
 
 Socrates: My users shouldn't have to know about RE.
 
-Plato:
+Plato: TODO
