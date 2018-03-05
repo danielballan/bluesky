@@ -27,7 +27,7 @@ Suppose we are executing some custom plan called ``plan``.
 
     RE(plan())
 
-If we give artibrary extra keyword arguments to ``RE``, they will be
+If we give arbitrary extra keyword arguments to ``RE``, they will be
 interpreted as metadata.
 
 .. code-block:: python
@@ -51,7 +51,7 @@ For example, this plan generates three different runs.
 .. code-block:: python
 
     from bluesky.plans import count, scan
-    from bluesky.examples det1, det2, motor  # simulated detectors, motor
+    from ophyd.sim det1, det2, motor  # simulated detectors, motor
 
     def plan():
         yield from count([det])
@@ -130,7 +130,8 @@ If there is a conflict, ``RE`` keywords takes precedence. So
 would override the individual 'purpose' metadata from the plan, marking all
 three as purpose=test.
 
-For more on injecting metadata via plans, refer to :ref:`customizing_metadata`.
+For more on injecting metadata via plans, refer to
+:ref:`this section <tutorial_plan_metadata>` of the tutorial.
 
 .. note::
 
@@ -173,9 +174,6 @@ For more on injecting metadata via plans, refer to :ref:`customizing_metadata`.
 
 3. Automatically
 ----------------
-
-*This section is probably only useful to developers. If you are user just
-trying to enter metadata, skip to the next section.*
 
 For each run, the RunEngine automatically records:
 
@@ -261,34 +259,60 @@ Persistence Between Sessions
 We provide way to save the contents of the metadata stash ``RE.md`` between
 sessions (e.g., exiting and re-opening IPython).
 
-In general, the ``RE.md`` attribute may be an ordinary Python dictionary or
-anything that supports the dictionary interface. To persist metadata between
-sessions, bluesky uses ``HistoryDict`` --- a Python dictionary backed by a
-sqlite database file. Any changes made to ``RE.md`` are synced to the file
-before IPython exits.
+In general, the ``RE.md`` attribute may be anything that supports the
+dictionary interface. The simplest is just a plain Python dictionary.
 
-The easiest way to create a ``HistoryDict`` is to use the convenience function,
-``get_history``. It searches for a pre-existing history file in one of several
-standard locations and, if it doesn't find one, it creates a new one.  (See the
-``get_history`` documentation below for details.)
+.. code-block:: python
+
+    RE.md = {}
+
+To persist metadata between sessions, bluesky uses
+:class:`~historydict.HistoryDict` --- a Python dictionary backed by a sqlite
+database file. Any changes made to ``RE.md`` are synced to the file before
+IPython exits.
+
+The easiest way to create a :class:`~historydict.HistoryDict` is to use the
+convenience function, :func:`~bluesky.utils.get_history`. It searches for a
+pre-existing history file in one of several standard locations and, if it
+doesn't find one, it creates a new one. (See the
+:func:`~bluesky.utils.get_history` documentation below for details, including
+the search path.)
 
 .. code-block:: python
 
     from bluesky.utils import get_history
-    RE = RunEngine(get_history())
+    RE.md = get_history()
 
 Alternatively, create a ``HistoryDict`` manually anywhere you please:
 
 .. code-block:: python
 
     from historydict import HistoryDict
-    h = HistoryDict('your/path/here')
-    RE = RunEngine(h)
+    RE.md = HistoryDict('your/path/here')
 
 .. autofunction:: bluesky.utils.get_history
 
 See also the
 `historydict documentation <https://github.com/Nikea/historydict#historydict>`_.
+
+.. warning::
+
+    The ``RE.md`` object can also be set when the RunEngine is instantiated:
+
+    .. code-block:: python
+
+        # This:
+        RE = RunEngine(...)
+
+        # is equivalent to this:
+        RE = RunEngine({})
+        RE.md = ...
+
+    As we stated
+    :ref:`at the start of the tutorial <tutorial_run_engine_setup>`, if you are
+    using bluesky at a user facility or with shared configuration, your
+    ``RE`` may already be configured, and defining a new ``RE`` as above can
+    result in data loss! If you aren't sure, it's safer to use ``RE.md = ...``.
 
 Allowed Data Types
 ------------------

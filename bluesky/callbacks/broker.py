@@ -3,10 +3,56 @@ import time as ttime
 from .core import CallbackBase
 from ..utils import ensure_uid
 import numpy as np
-import doct
 
 
-class LiveImage(CallbackBase):
+class BrokerCallbackBase(CallbackBase):
+    """
+    Base class for callbacks which need filled documents
+
+    Parameters
+    ----------
+    fields: Iterable of str
+        Names of data field in an Event
+    db: Broker instance, optional
+        The Broker instance to pull the data from
+    """
+
+    def __init__(self, fields, *, db=None):
+        self.db = db
+        self.fields = fields
+        self.descriptor_dict = {}
+
+    def clear(self):
+        self.descriptor_dict.clear()
+
+    def stop(self, doc):
+        self.clear()
+
+    def descriptor(self, doc):
+        self.descriptor_dict = {doc['uid']: doc}
+
+    def event(self, doc):
+        # the subset of self.fields that are (1) in the doc and (2) unfilled
+        # and (3) external
+        fields = [field for field in self.fields
+                  if (field in doc['data'] and
+                      not doc.get('filled', {}).get(field) and
+                      'external' in self.descriptor_dict[
+                          doc['descriptor']]['data_keys'][field])]
+        if fields:
+            if self.db is None:
+                raise RuntimeError('Either the data must be pre-loaded or '
+                                   'a Broker instance must be provided '
+                                   'via the db parameter of '
+                                   'BrokerCallbackBase.')
+            res, = self.db.fill_events(
+                events=[doc],
+                descriptors=[self.descriptor_dict[doc['descriptor']]],
+                fields=fields)
+            doc['data'].update(**res['data'])  # modify in place
+
+
+class LiveImage(BrokerCallbackBase):
     """
     Stream 2D images in a cross-section viewer.
 
@@ -14,31 +60,45 @@ class LiveImage(CallbackBase):
     ----------
     field : string
         name of data field in an Event
+    fs: Registry instance
+        The Registry instance to pull the data from
+    cmap : str,  colormap, or None
+        color map to use.  Defaults to gray
+    norm : Normalize or None
+       Normalization function to use
+    limit_func : callable, optional
+        function that takes in the image and returns clim values
+    auto_redraw : bool, optional
+    interpolation : str, optional
+        Interpolation method to use. List of valid options can be found in
+        CrossSection2DView.interpolation
     """
-    def __init__(self, field, *, fs=None):
+
+    def __init__(self, field, *, db=None, cmap=None, norm=None,
+                 limit_func=None, auto_redraw=True, interpolation=None,
+                 window_title=None):
         from xray_vision.backend.mpl.cross_section_2d import CrossSection
         import matplotlib.pyplot as plt
-        super().__init__()
-        self.field = field
+        super().__init__((field,), db=db)
         fig = plt.figure()
-        self.cs = CrossSection(fig)
+        self.field = field
+        self.cs = CrossSection(fig, cmap, norm,
+                               limit_func, auto_redraw, interpolation)
+        if window_title:
+            self.cs._fig.canvas.set_window_title(window_title)
         self.cs._fig.show()
-        if fs is None:
-            import filestore.api as fs
-        self.fs = fs
 
     def event(self, doc):
-        uid = doc['data'][self.field]
-        data = self.fs.retrieve(uid)
-        self.update(data)
         super().event(doc)
+        data = doc['data'][self.field]
+        self.update(data)
 
     def update(self, data):
         self.cs.update_image(data)
         self.cs._fig.canvas.draw_idle()
 
 
-def post_run(callback, db=None, fill=False):
+def post_run(callback, db, fill=False):
     """Trigger a callback to process all the Documents from a run at the end.
 
     This function does not receive the Document stream during collection.
@@ -53,9 +113,8 @@ def post_run(callback, db=None, fill=False):
             def func(doc_name, doc):
                 pass
 
-    db : Broker, optional
-        The databroker instance to use, if not provided use databroker
-        singleton
+    db : Broker
+        The databroker instance to use
 
     fill : boolean, optional
         Whether to deference externally-stored data in the documents.
@@ -81,29 +140,24 @@ def post_run(callback, db=None, fill=False):
     +------------+-------------------+----------------+----------------+
 
     """
-
-    if db is None:
-        from databroker import DataBroker as db
-
     def f(name, doc):
         if name != 'stop':
             return
         uid = ensure_uid(doc['run_start'])
         header = db[uid]
-        callback('start', header['start'])
-        for descriptor in header['descriptors']:
-            callback('descriptor', descriptor)
-        for event in db.get_events(header, fill=fill):
-            callback('event', event)
+        for name, doc in header.documents(fill=fill):
+            callback(name, doc)
         # Depending on the order that this callback and the
         # databroker-insertion callback were called in, the databroker might
         # not yet have the 'stop' document that we currently have, so we'll
         # use our copy instead of expecting the header to include one.
-        callback('stop', doc)
+        if name != 'stop':
+            callback('stop', doc)
+
     return f
 
 
-def make_restreamer(callback, db=None):
+def make_restreamer(callback, db):
     """
     Run a callback whenever a uid is updated.
 
@@ -112,10 +166,8 @@ def make_restreamer(callback, db=None):
     callback : callable
         expected signature is `f(name, doc)`
 
-    db : Broker, optional
-        The databroker instance to use, if not provided use databroker
-        singleton
-
+    db : Broker
+        The databroker instance to use
 
     Example
     -------
@@ -124,27 +176,20 @@ def make_restreamer(callback, db=None):
     >>> def f(name, doc):
     ...     # do stuff
     ...
-    >>> g = make_restreamer(f)
+    >>> g = make_restreamer(f, db)
 
     To use this `ophyd.callbacks.LastUidSignal`:
 
     >>> last_uid_signal.subscribe(g)
     """
-    from databroker import process
-
-    if db is None:
-        from databroker import DataBroker as db
-
     def cb(value, **kwargs):
-        return process(db[value], callback)
+        return db.process(db[value], callback)
+
     return cb
 
 
-def verify_files_saved(name, doc, db=None):
+def verify_files_saved(name, doc, db):
     "This is a brute-force approach. We retrieve all the data."
-    if db is None:
-        from databroker import DataBroker as db
-
     ttime.sleep(0.1)  # Wait for data to be saved.
     if name != 'stop':
         return
@@ -165,7 +210,7 @@ def verify_files_saved(name, doc, db=None):
         print('\x1b[1A\u2713')  # print a checkmark on the previous line
 
 
-class LiveTiffExporter(CallbackBase):
+class LiveTiffExporter(BrokerCallbackBase):
     """
     Save TIFF files.
 
@@ -192,6 +237,7 @@ class LiveTiffExporter(CallbackBase):
     ----------
     filenames : list of filenames written in ongoing or most recent run
     """
+
     def __init__(self, field, template, dryrun=False, overwrite=False,
                  db=None):
         try:
@@ -206,12 +252,15 @@ class LiveTiffExporter(CallbackBase):
             # stash a reference so the module is accessible in self._save_image
             self._tifffile = tifffile
 
-        if db is None:
-            from databroker import DataBroker as db
-
-        self.db = db
+        try:
+            import doct
+        except ImportError:
+            print('doct is required by LiveTiffExporter')
+        else:
+            self._doct = doct
 
         self.field = field
+        super().__init__((field,), db=db.fs)
         self.template = template
         self.dryrun = dryrun
         self.overwrite = overwrite
@@ -231,13 +280,13 @@ class LiveTiffExporter(CallbackBase):
         self.filenames = []
         # Convert doc from dict into dottable dict, more convenient
         # in Python format strings: doc.key == doc['key']
-        self._start = doct.Document('start', doc)
+        self._start = self._doct.Document('start', doc)
         super().start(doc)
 
     def event(self, doc):
         if self.field not in doc['data']:
             return
-        self.db.fill_event(doc)  # modifies in place
+        super().event(doc)
         image = np.asarray(doc['data'][self.field])
         if image.ndim == 2:
             filename = self.template.format(start=self._start, event=doc)
@@ -247,7 +296,6 @@ class LiveTiffExporter(CallbackBase):
                 filename = self.template.format(i=i, start=self._start,
                                                 event=doc)
                 self._save_image(plane, filename)
-        super().event(doc)
 
     def stop(self, doc):
         self._start = None

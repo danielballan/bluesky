@@ -5,8 +5,10 @@ from itertools import zip_longest
 
 from bluesky import Msg
 
-from bluesky.plans import (msg_mutator, plan_mutator, pchain,
-                           single_gen as single_message_gen, finalize_wrapper)
+from bluesky.preprocessors import (msg_mutator, stub_wrapper,
+                                   plan_mutator, pchain, single_gen as
+                                   single_message_gen,
+                                   finalize_wrapper)
 
 from bluesky.utils import ensure_generator
 
@@ -363,7 +365,55 @@ def test_plan_mutator_returns():
                     kwargs_sq=[{}]*5)
 
 
-def test_base_excetpion():
+def test_insert_before():
+
+    def target():
+        yield Msg('a', None)
+        ret = yield Msg('TARGET', None)
+        yield Msg('b', None)
+        assert ret.command == 'TARGET'
+        return ret
+        return ret
+
+    def insert_before(msg):
+        if msg.command == 'TARGET':
+            def pre():
+                yield Msg('pre', None)
+                ret = yield msg
+                assert ret is not None
+                assert ret.command == 'TARGET'
+                return ret
+
+            return pre(), None
+        else:
+            return None, None
+
+    ret = EchoRE(plan_mutator(target(), insert_before))
+
+
+def test_insert_after():
+
+    def target():
+        yield Msg('a', None)
+        ret = yield Msg('TARGET', None)
+        yield Msg('b', None)
+        assert ret is not None
+        assert ret.command == 'TARGET'
+        return ret
+
+    def insert_after(msg):
+        if msg.command == 'TARGET':
+            def post():
+                yield Msg('post', None)
+
+            return None, post()
+        else:
+            return None, None
+
+    ret = EchoRE(plan_mutator(target(), insert_after))
+
+
+def test_base_exception():
     class SnowFlake(Exception):
         ...
 
@@ -399,3 +449,16 @@ def test_msg_mutator_skip():
                     cmd_sq='abcd',
                     args_sq=[()]*4,
                     kwargs_sq=[{}]*4)
+
+
+def test_stub_wrapper():
+    def plan():
+        yield Msg('open_run')
+        yield Msg('stage')
+        yield Msg('read')
+        yield Msg('unstage')
+        yield Msg('close_run')
+
+    stub_plan = list(stub_wrapper(plan()))
+    assert len(stub_plan) == 1
+    assert stub_plan[0].command == 'read'

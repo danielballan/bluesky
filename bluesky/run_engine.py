@@ -4,6 +4,7 @@ import time as ttime
 import sys
 import logging
 from warnings import warn
+from inspect import Parameter, Signature
 from itertools import count, tee
 from collections import deque, defaultdict, ChainMap
 import signal
@@ -19,8 +20,8 @@ from super_state_machine.extras import PropertyMachine
 from super_state_machine.errors import TransitionError
 
 from .utils import (CallbackRegistry, SignalHandler, normalize_subs_input,
-                    AsyncInput, new_uid, sanitize_np, NoReplayAllowed,
-                    RequestAbort, RequestStop,  RunEngineInterrupted,
+                    AsyncInput, new_uid, NoReplayAllowed,
+                    RequestAbort, RequestStop, RunEngineInterrupted,
                     IllegalMessageSequence, FailedPause, FailedStatus,
                     InvalidCommand, PlanHalt, Msg, ensure_generator,
                     single_gen, short_uid)
@@ -82,7 +83,105 @@ class LoggingPropertyMachine(PropertyMachine):
             obj.state_hook(value, old_value)
 
 
+# See RunEngine.__call__.
+_call_sig = Signature(
+    [Parameter('self', Parameter.POSITIONAL_ONLY),
+     Parameter('plan', Parameter.POSITIONAL_ONLY),
+     Parameter('subs', Parameter.POSITIONAL_ONLY, default=None),
+     Parameter('metadata_kw', Parameter.VAR_KEYWORD)])
+
+
 class RunEngine:
+    """The Run Engine execute messages and emits Documents.
+
+    Parameters
+    ----------
+    md : dict-like, optional
+        The default is a standard Python dictionary, but fancier
+        objects can be used to store long-term history and persist
+        it between sessions. The standard configuration
+        instantiates a Run Engine with historydict.HistoryDict, a
+        simple interface to a sqlite file. Any object supporting
+        `__getitem__`, `__setitem__`, and `clear` will work.
+
+    loop : asyncio event loop
+        e.g., ``asyncio.get_event_loop()`` or ``asyncio.new_event_loop()``
+
+    preprocessors : list
+        Generator functions that take in a plan (generator instance) and
+        modify its messages on the way out. Suitable examples include
+        the functions in the module ``bluesky.plans`` with names ending in
+        'wrapper'.  Functions are composed in order: the preprocessors
+        ``[f, g]`` are applied like ``f(g(plan))``.
+
+    md_validator : callable, optional
+        a function that raises and prevents starting a run if it deems
+        the metadata to be invalid or incomplete
+        Expected signature: f(md)
+        Function should raise if md is invalid. What that means is
+        completely up to the user. The function's return value is
+        ignored.
+
+    Attributes
+    ----------
+    md
+        Direct access to the dict-like persistent storage described above
+
+    record_interruptions
+        False by default. Set to True to generate an extra event stream
+        that records any interruptions (pauses, suspensions).
+
+    state
+        {'idle', 'running', 'paused'}
+
+    suspenders
+        Read-only collection of `bluesky.suspenders.SuspenderBase` objects
+        which can suspend and resume execution; see related methods.
+
+    preprocessors : list
+        Generator functions that take in a plan (generator instance) and
+        modify its messages on the way out. Suitable examples include
+        the functions in the module ``bluesky.plans`` with names ending in
+        'wrapper'.  Functions are composed in order: the preprocessors
+        ``[f, g]`` are applied like ``f(g(plan))``.
+
+    msg_hook
+        Callable that receives all messages before they are processed
+        (useful for logging or other development purposes); expected
+        signature is ``f(msg)`` where ``msg`` is a ``bluesky.Msg``, a
+        kind of namedtuple; default is None.
+
+    state_hook
+        Callable with signature ``f(new_state, old_state)`` that will be
+        called whenever the RunEngine's state attribute is updated; default
+        is None
+
+    waiting_hook
+        Callable with signature ``f(status_object)`` that will be called
+        whenever the RunEngine is waiting for long-running commands
+        (trigger, set, kickoff, complete) to complete. This hook is useful to
+        incorporate a progress bar.
+
+    ignore_callback_exceptions
+        Boolean, False by default.
+
+    loop : asyncio event loop
+        e.g., ``asyncio.get_event_loop()`` or ``asyncio.new_event_loop()``
+
+    max_depth
+        Maximum stack depth; set this to prevent users from calling the
+        RunEngine inside a function (which can result in unexpected
+        behavior and breaks introspection tools). Default is None.
+        For built-in Python interpreter, set to 2. For IPython, set to 11
+        (tested on IPython 5.1.0; other versions may vary).
+
+    pause_msg : str
+        The message printed when a run is interrupted. This message
+        includes instructions of changing the state of the RunEngine.
+        It is set to ``bluesky.run_engine.PAUSE_MSG`` by default and
+        can be modified based on needs.
+
+    """
 
     state = LoggingPropertyMachine(RunEngineStateMachine)
     _UNCACHEABLE_COMMANDS = ['pause', 'subscribe', 'unsubscribe', 'stage',
@@ -91,90 +190,6 @@ class RunEngine:
 
     def __init__(self, md=None, *, loop=None, preprocessors=None,
                  md_validator=None):
-        """The Run Engine execute messages and emits Documents.
-
-        Parameters
-        ----------
-        md : dict-like, optional
-            The default is a standard Python dictionary, but fancier
-            objects can be used to store long-term history and persist
-            it between sessions. The standard configuration
-            instantiates a Run Engine with historydict.HistoryDict, a
-            simple interface to a sqlite file. Any object supporting
-            `__getitem__`, `__setitem__`, and `clear` will work.
-
-        loop : asyncio event loop
-            e.g., ``asyncio.get_event_loop()`` or ``asyncio.new_event_loop()``
-
-        preprocessors : list
-            Generator functions that take in a plan (generator instance) and
-            modify its messages on the way out. Suitable examples include
-            the functions in the module ``bluesky.plans`` with names ending in
-            'wrapper'.  Functions are composed in order: the preprocessors
-            ``[f, g]`` are applied like ``f(g(plan))``.
-
-        md_validator : callable, optional
-            a function that raises and prevents starting a run if it deems
-            the metadata to be invalid or incomplete
-            Expected signature: f(md)
-            Function should raise if md is invalid. What that means is
-            completely up to the user. The function's return value is
-            ignored.
-
-        Attributes
-        ----------
-        ignore_callback_exceptions
-            Boolean, False by default.
-
-        loop : asyncio event loop
-            e.g., ``asyncio.get_event_loop()`` or ``asyncio.new_event_loop()``
-
-        max_depth
-            Maximum stack depth; set this to prevent users from calling the
-            RunEngine inside a function (which can result in unexpected
-            behavior and breaks introspection tools). Default is None.
-            For built-in Python interpreter, set to 2. For IPython, set to 11
-            (tested on IPython 5.1.0; other versions may vary).
-
-        md
-            Direct access to the dict-like persistent storage described above
-
-        msg_hook
-            Callable that receives all messages before they are processed
-            (useful for logging or other development purposes); expected
-            signature is ``f(msg)`` where ``msg`` is a ``bluesky.Msg``, a
-            kind of namedtuple; default is None.
-
-        record_interruptions
-            False by default. Set to True to generate an extra event stream
-            that records any interruptions (pauses, suspensions).
-
-        state
-            {'idle', 'running', 'paused'}
-
-        state_hook
-            Callable with signature ``f(new_state, old_state)`` that will be
-            called whenever the RunEngine's state attribute is updated; default
-            is None
-
-        suspenders
-            Read-only collection of `bluesky.suspenders.SuspenderBase` objects
-            which can suspend and resume execution; see related methods.
-
-        Methods
-        -------
-        request_pause
-            Pause the Run Engine at the next checkpoint.
-        resume
-            Start from the last checkpoint after a pause.
-        abort
-            Move from 'paused' to 'idle', stopping the run permanently.
-        register_command
-            Teach the Run Engine a new Message command.
-        unregister_command
-            Undo register_command.
-
-        """
         if loop is None:
             loop = asyncio.get_event_loop()
         self._loop = loop
@@ -199,7 +214,9 @@ class RunEngine:
         self.max_depth = None
         self.msg_hook = None
         self.state_hook = None
+        self.waiting_hook = None
         self.record_interruptions = False
+        self.pause_msg = PAUSE_MSG
 
         # The RunEngine keeps track of a *lot* of state.
         # All flags and caches are defined here with a comment. Good luck.
@@ -214,6 +231,7 @@ class RunEngine:
         self._interrupted = False  # True if paused, aborted, or failed
         self._objs_read = deque()  # objects read in one Event
         self._read_cache = deque()  # cache of obj.read() in one Event
+        self._asset_docs_cache = deque()  # cache of obj.collect_asset_docs()
         self._staged = set()  # objects staged, not yet unstaged
         self._objs_seen = set()  # all objects seen
         self._movable_objs_touched = set()  # objects we moved at any point
@@ -226,12 +244,13 @@ class RunEngine:
         self._config_desc_cache = dict()  # " obj.describe_configuration()
         self._config_values_cache = dict()  # " obj.read_configuration() values
         self._config_ts_cache = dict()  # " obj.read_configuration() timestamps
-        self._descriptors = dict()  # cache of {(name, objs_frozen_set): uid}
+        self._descriptors = dict()  # cache of {name: (objs_frozen_set, doc)}
         self._monitor_params = dict()  # cache of {obj: (cb, kwargs)}
-        self._sequence_counters = dict()  # a seq_num counter per Descriptor
+        self._sequence_counters = dict()  # a seq_num counter per stream
         self._teed_sequence_counters = dict()  # for if we redo data-points
         self._suspenders = set()  # set holding suspenders
-        self._groups = defaultdict(set)  # sets of objs to wait for
+        self._groups = defaultdict(set)  # sets of Events to wait for
+        self._status_objs = defaultdict(set)  # status objects to wait for
         self._temp_callback_ids = set()  # ids from CallbackRegistry
         self._msg_cache = deque()  # history of processed msgs for rewinding
         self._rewindable_flag = True  # if the RE is allowed to replay msgs
@@ -242,10 +261,11 @@ class RunEngine:
         self._task = None  # asyncio.Task associated with call to self._run
         self._status_tasks = deque()  # from self._status_object_completed
         self._pardon_failures = None  # will hold an asyncio.Event
-        self._plan = None  # the scan plan instance from __call__
+        self._plan = None  # the plan instance from __call__
         self._command_registry = {
             'create': self._create,
             'save': self._save,
+            'drop': self._drop,
             'read': self._read,
             'monitor': self._monitor,
             'unmonitor': self._unmonitor,
@@ -277,8 +297,6 @@ class RunEngine:
         # RunEngine for user convenience.
         self.dispatcher = Dispatcher()
         self.ignore_callback_exceptions = False
-        self.subscribe = self.dispatcher.subscribe
-        self.unsubscribe = self.dispatcher.unsubscribe
 
         # aliases for back-compatibility
         self.subscribe_lossless = self.dispatcher.subscribe
@@ -287,6 +305,56 @@ class RunEngine:
         self._unsubscribe_lossless = self.dispatcher.unsubscribe
 
         self.loop.call_soon(self._check_for_signals)
+
+    def subscribe(self, func, name='all'):
+        """
+        Register a callback function to consume documents.
+
+        .. versionchanged :: 0.10.0
+            The order of the arguments was swapped and the ``name``
+            argument has been given a default value, ``'all'``. Because the
+            meaning of the arguments is unambigious (they must be a callable
+            and a string, respectively) the old order will be supported
+            indefeinitely, with a warning.
+
+        Parameters
+        ----------
+        func: callable
+            expecting signature like ``f(name, document)``
+            where name is a string and document is a dict
+        name : {'all', 'start', 'descriptor', 'event', 'stop'}, optional
+            the type of document this function should receive ('all' by
+            default)
+
+        Returns
+        -------
+        token : int
+            an integer ID that can be used to unsubscribe
+
+        See Also
+        --------
+        :meth:`RunEngine.unsubscribe`
+        """
+        # pass through to the Dispatcher, spelled out verbosely here to make
+        # sphinx happy -- tricks with __doc__ aren't enough to fool it
+        return self.dispatcher.subscribe(func, name)
+
+    def unsubscribe(self, token):
+        """
+        Unregister a callback function its integer ID.
+
+        Parameters
+        ----------
+        token : int
+            the integer ID issued by :meth:`RunEngine.subscribe`
+
+        See Also
+        --------
+        :meth:`RunEngine.subscribe`
+        """
+        # pass through to the Dispatcher, spelled out verbosely here to make
+        # sphinx happy -- tricks with __doc__ aren't enough to fool it
+        return self.dispatcher.unsubscribe(token)
 
     @property
     def rewindable(self):
@@ -325,6 +393,7 @@ class RunEngine:
         self._bundling = False
         self._objs_read.clear()
         self._read_cache.clear()
+        self._asset_docs_cache.clear()
         self._uncollected.clear()
         self._describe_cache.clear()
         self._config_desc_cache.clear()
@@ -334,6 +403,7 @@ class RunEngine:
         self._sequence_counters.clear()
         self._teed_sequence_counters.clear()
         self._groups.clear()
+        self._status_objs.clear()
         self._interruptions_desc_uid = None
         self._interruptions_counter = count(1)
 
@@ -398,6 +468,10 @@ class RunEngine:
         name : str
         func : callable
             This can be a function or a method. The signature is `f(msg)`.
+
+        See Also
+        --------
+        :meth:`RunEngine.unregister_command`
         """
         self._command_registry[name] = func
 
@@ -408,6 +482,10 @@ class RunEngine:
         Parameters
         ----------
         name : str
+
+        See Also
+        --------
+        :meth:`RunEngine.register_command`
         """
         del self._command_registry[name]
 
@@ -441,7 +519,7 @@ class RunEngine:
         self.state = 'paused'
         self._record_interruption('pause')
         if not self.resumable:
-            # cannot resume, so we cannot pause.  Abort the scan
+            # cannot resume, so we cannot pause.  Abort the plan.
             print("No checkpoint; cannot pause.")
             print("Aborting: running cleanup and marking "
                   "exit_status as 'abort'...")
@@ -485,52 +563,46 @@ class RunEngine:
             jsonschema.validate(doc, schemas[DocumentNames.event])
             self.dispatcher.process(DocumentNames.event, doc)
 
-    def __call__(self, plan, subs=None, *, raise_if_interrupted=False,
-                 **metadata_kw):
-        """Run the scan defined by ``plan``
+    def __call__(self, *args, **metadata_kw):
+        """Execute a plan.
 
-        Any keyword arguments other than those listed below will be interpreted
-        as metadata and recorded with the run.
+        Any keyword arguments will be interpreted as metadata and recorded with
+        any run(s) created by executing the plan. Notice that the plan
+        (required) and extra subscriptions (optional) must be given as
+        positional arguments.
 
         Parameters
         ----------
-        plan : generator
+        plan : generator (positional only)
             a generator or that yields ``Msg`` objects (or an iterable that
             returns such a generator)
-        subs: callable, list, or dict, optional
+        subs : callable, list, or dict, optional (positional only)
             Temporary subscriptions (a.k.a. callbacks) to be used on this run.
             For convenience, any of the following are accepted:
-            - a callable, which will be subscribed to 'all'
-            - a list of callables, which again will be subscribed to 'all'
-            - a dictionary, mapping specific subscriptions to callables or
+
+            * a callable, which will be subscribed to 'all'
+            * a list of callables, which again will be subscribed to 'all'
+            * a dictionary, mapping specific subscriptions to callables or
               lists of callables; valid keys are {'all', 'start', 'stop',
               'event', 'descriptor'}
-        raise_if_interrupted : bool
-            If the RunEngine is called from inside a script or a function, it
-            can be useful to make it raise an exception to halt further
-            execution of the script after a pause or a stop. If True, these
-            interruptions (that would normally not raise any exception) will
-            raise RunEngineInterrupted. False by default.
 
         Returns
         -------
         uids : list
-            list of Header uids (a.k.a RunStart uids) of run(s)
-
-        Examples
-        --------
-        # Simplest example:
-        >>> RE(my_scan)
-        # Examples using subscriptions (a.k.a. callbacks):
-        >>> def print_data(doc):
-        ...     print("Measured: %s" % doc['data'])
-        ...
-        >>> def celebrate(doc):
-        ...     # Do nothing with the input.
-        ...     print("The run is finished!!!")
-        ...
-        >>> RE(my_generator, subs={'event': print_data, 'stop': celebrate})
+            list of uids (i.e. RunStart Document uids) of run(s)
         """
+        # This scheme lets us make 'plan' and 'subs' POSITIONAL ONLY, reserving
+        # all keyword arguments for user metdata.
+        arguments = _call_sig.bind(self, *args, **metadata_kw).arguments
+        plan = arguments['plan']
+        subs = arguments.get('subs', None)
+        metadata_kw = arguments.get('metadata_kw', {})
+        if 'raise_if_interrupted' in metadata_kw:
+            warn("The 'raise_if_interrupted' flag has been removed. The "
+                 "RunEngine now always raises RunEngineInterrupted if it is "
+                 "interrupted. The 'raise_if_interrupted' keyword argument, "
+                 "like all keyword arguments, will be interpreted as "
+                 "metadata.")
         # Check that the RE is not being called from inside a function.
         if self.max_depth is not None:
             frame = inspect.currentframe()
@@ -566,7 +638,7 @@ class RunEngine:
 
         for name, funcs in normalize_subs_input(subs).items():
             for func in funcs:
-                self._temp_callback_ids.add(self.subscribe(name, func))
+                self._temp_callback_ids.add(self.subscribe(func, name))
 
         self._plan = plan  # this ref is just used for metadata introspection
         self._metadata_per_call.update(metadata_kw)
@@ -598,10 +670,12 @@ class RunEngine:
                     if exc is not None:
                         raise exc
 
-            if raise_if_interrupted and self._interrupted:
-                raise RunEngineInterrupted("RunEngine was interrupted.")
+            if self._interrupted:
+                raise RunEngineInterrupted(self.pause_msg) from None
 
-        return self._run_start_uids
+        return tuple(self._run_start_uids)
+
+    __call__.__signature__ = _call_sig
 
     def resume(self):
         """Resume a paused plan from the last checkpoint.
@@ -630,6 +704,8 @@ class RunEngine:
             if hasattr(obj, 'resume'):
                 obj.resume()
         self._resume_event_loop()
+        if self._interrupted:
+            raise RunEngineInterrupted(self.pause_msg) from None
         return self._run_start_uids
 
     def _rewind(self):
@@ -686,8 +762,8 @@ class RunEngine:
 
         See Also
         --------
-        `RunEngine.remove_suspender`
-        `RunEngine.clear_suspenders`
+        :meth:`RunEngine.remove_suspender`
+        :meth:`RunEngine.clear_suspenders`
         """
         self._suspenders.add(suspender)
         suspender.install(self)
@@ -702,8 +778,8 @@ class RunEngine:
 
         See Also
         --------
-        `RunEngine.install_suspender`
-        `RunEngine.clear_suspenders`
+        :meth:`RunEngine.install_suspender`
+        :meth:`RunEngine.clear_suspenders`
         """
         if suspender in self._suspenders:
             suspender.remove()
@@ -715,16 +791,15 @@ class RunEngine:
 
         See Also
         --------
-        `RunEngine.install_suspender`
-        `RunEngine.remove_suspender`
+        :meth:`RunEngine.install_suspender`
+        :meth:`RunEngine.remove_suspender`
         """
         for sus in self.suspenders:
             self.remove_suspender(sus)
 
     def request_suspend(self, fut, *, pre_plan=None, post_plan=None,
                         justification=None):
-        """
-        Request that the run suspend itself until the future is finished.
+        """Request that the run suspend itself until the future is finished.
 
         The two plans will be run before and after waiting for the future.
         This enable doing things like opening and closing shutters and
@@ -733,12 +808,18 @@ class RunEngine:
         Parameters
         ----------
         fut : asyncio.Future
-        pre_plan : iterable, optional
-            Plan to execute just before suspending
-        post_plan : iterable, optional
-            Plan to execute just before resuming
+
+        pre_plan : iterable or callable, optional
+           Plan to execute just before suspending. If callable, must
+           take no arguments.
+
+        post_plan : iterable or callable, optional
+            Plan to execute just before resuming. If callable, must
+            take no arguments.
+
         justification : str, optional
             explanation of why the suspension has been requested
+
         """
         if not self.resumable:
             print("No checkpoint; cannot suspend.")
@@ -773,9 +854,14 @@ class RunEngine:
             # queue up the cached messages
             self._plan_stack.append(new_plan)
             self._response_stack.append(None)
+            self._plan_stack.append(single_gen(
+                Msg('rewindable', None, self.rewindable)))
+            self._response_stack.append(None)
             # if there is a post plan add it between the wait
             # and the cached messages
             if post_plan is not None:
+                if callable(post_plan):
+                    post_plan = post_plan()
                 self._plan_stack.append(ensure_generator(post_plan))
                 self._response_stack.append(None)
             # add the wait on the future to the stack
@@ -783,8 +869,14 @@ class RunEngine:
             self._response_stack.append(None)
             # if there is a pre plan add on top of the wait
             if pre_plan is not None:
+                if callable(pre_plan):
+                    pre_plan = pre_plan()
                 self._plan_stack.append(ensure_generator(pre_plan))
                 self._response_stack.append(None)
+
+            self._plan_stack.append(single_gen(
+                Msg('rewindable', None, False)))
+            self._response_stack.append(None)
             # The event loop is still running. The pre_plan will be processed,
             # and then the RunEngine will be hung up on processing the
             # 'wait_for' message until `fut` is set.
@@ -792,6 +884,11 @@ class RunEngine:
     def abort(self, reason=''):
         """
         Stop a running or paused plan and mark it as aborted.
+
+        See Also
+        --------
+        :meth:`RunEngine.halt`
+        :meth:`RunEngine.stop`
         """
         if self.state.is_idle:
             raise TransitionError("RunEngine is already idle.")
@@ -803,12 +900,19 @@ class RunEngine:
         self._task.cancel()
         for task in self._status_tasks:
             task.cancel()
+        self._exit_status = 'abort'
         if self.state == 'paused':
             self._resume_event_loop()
+        return self._run_start_uids
 
     def stop(self):
         """
         Stop a running or paused plan, but mark it as successful (not aborted).
+
+        See Also
+        --------
+        :meth:`RunEngine.abort`
+        :meth:`RunEngine.halt`
         """
         if self.state.is_idle:
             raise TransitionError("RunEngine is already idle.")
@@ -819,9 +923,16 @@ class RunEngine:
         self._task.cancel()
         if self.state == 'paused':
             self._resume_event_loop()
+        return self._run_start_uids
 
     def halt(self):
-        '''Stop the running plan and do not allow the plan a chance to clean up
+        '''
+        Stop the running plan and do not allow the plan a chance to clean up.
+
+        See Also
+        --------
+        :meth:`RunEngine.abort`
+        :meth:`RunEngine.stop`
         '''
         if self.state.is_idle:
             raise TransitionError("RunEngine is already idle.")
@@ -829,9 +940,11 @@ class RunEngine:
               "'abort'...")
         self._interrupted = True
         self._exception = PlanHalt()
+        self._exit_status = 'abort'
         self._task.cancel()
         if self.state == 'paused':
             self._resume_event_loop()
+        return self._run_start_uids
 
     def _stop_movable_objects(self, *, success=True):
         "Call obj.stop() for all objects we have moved. Log any exceptions."
@@ -977,7 +1090,6 @@ class RunEngine:
                           "KeyboardInterrupt. Intercepting and triggering "
                           "a HALT.")
                     self.loop.call_soon(self.halt)
-                    print(PAUSE_MSG)
                 except asyncio.CancelledError as e:
                     # if we are handling this twice, raise and leave the plans
                     # alone
@@ -1049,20 +1161,6 @@ class RunEngine:
                 except RuntimeError as e:
                     print('The plan {!r} tried to yield a value on close.  '
                           'Please fix your plan.'.format(p))
-            # cancel the rest of the tasks
-            for task in asyncio.Task.all_tasks(self.loop):
-                if task is self._task:
-                    continue
-                task.cancel()
-                try:
-                    texc = task.exception()
-                except (asyncio.CancelledError,
-                        asyncio.InvalidStateError):
-                    pass
-                else:
-                    # TODO, merge this with main task exception?
-                    if texc is not None:
-                        print(texc)
 
             self.loop.stop()
             self.state = 'idle'
@@ -1092,7 +1190,6 @@ class RunEngine:
                     self.log.debug("RunEngine detected two SIGINTs. "
                                    "A hard pause will be requested.")
                     self.loop.call_soon(self.request_pause, False)
-                    print(PAUSE_MSG)
             else:
                 # No new SIGINTs to process.
                 if self._num_sigints_processed > 0:
@@ -1190,7 +1287,10 @@ class RunEngine:
 
         Expected message object is:
 
-            Msg('close_run')
+            Msg('close_run', None, exit_status=None, reason=None)
+
+        if *exit_stats* and *reason* are not provided, use the values
+        stashed on the RE.
         """
         if not self._run_is_open:
             raise IllegalMessageSequence("A 'close_run' message was received "
@@ -1203,10 +1303,24 @@ class RunEngine:
         for obj, (cb, kwargs) in list(self._monitor_params.items()):
             obj.clear_sub(cb)
             del self._monitor_params[obj]
+        # Count the number of Events in each stream.
+        num_events = {}
+        for bundle_name, counter in self._sequence_counters.items():
+            if bundle_name is None:
+                # rare but possible via Msg('create')
+                continue
+            num_events[bundle_name] = next(counter) - 1
+        reason = msg.kwargs.get('reason', None)
+        if reason is None:
+            reason = self._reason
+        exit_status = msg.kwargs.get('exit_status', None)
+        if exit_status is None:
+            exit_status = self._exit_status
         doc = dict(run_start=self._run_start_uid,
                    time=ttime.time(), uid=new_uid(),
-                   exit_status=self._exit_status,
-                   reason=self._reason)
+                   exit_status=exit_status,
+                   reason=reason,
+                   num_events=num_events)
         self._clear_run_cache()
         yield from self.emit(DocumentNames.stop, doc)
         self.log.debug("Emitted RunStop (uid=%r)", doc['uid'])
@@ -1236,9 +1350,10 @@ class RunEngine:
         if self._bundling:
             raise IllegalMessageSequence("A second 'create' message is not "
                                          "allowed until the current event "
-                                         "bundle is closed with a 'save' "
-                                         "message.")
+                                         "bundle is closed with a 'save' or "
+                                         'drop' "message.")
         self._read_cache.clear()
+        self._asset_docs_cache.clear()
         self._objs_read.clear()
         self._bundling = True
         self._bundle_name = None  # default
@@ -1261,6 +1376,11 @@ class RunEngine:
         obj = msg.obj
         # actually _read_ the object
         ret = obj.read(*msg.args, **msg.kwargs)
+        # Ask the object for any datum documents is has cached.
+        if hasattr(obj, 'collect_asset_docs'):
+            datum_docs = list(obj.collect_asset_docs(*msg.args, **msg.kwargs))
+        else:
+            datum_docs = []
 
         if self._bundling:
             # if the object is not in the _describe_cache, cache it
@@ -1287,6 +1407,7 @@ class RunEngine:
 
             # stash the results
             self._read_cache.append(ret)
+            self._asset_docs_cache.extend(datum_docs)
 
         return ret
 
@@ -1295,7 +1416,7 @@ class RunEngine:
         config_values = {}
         config_ts = {}
         for key, val in obj.read_configuration().items():
-            config_values[key] = sanitize_np(val['value'])
+            config_values[key] = val['value']
             config_ts[key] = val['timestamp']
         self._config_values_cache[obj] = config_values
         self._config_ts_cache[obj] = config_ts
@@ -1336,12 +1457,15 @@ class RunEngine:
         config = {obj.name: {'data': {}, 'timestamps': {}}}
         config[obj.name]['data_keys'] = obj.describe_configuration()
         for key, val in obj.read_configuration().items():
-            config[obj.name]['data'][key] = sanitize_np(val['value'])
+            config[obj.name]['data'][key] = val['value']
             config[obj.name]['timestamps'][key] = val['timestamp']
         object_keys = {obj.name: list(data_keys)}
+        hints = {}
+        if hasattr(obj, 'hints'):
+            hints.update({obj.name: obj.hints})
         desc_doc = dict(run_start=self._run_start_uid, time=ttime.time(),
                         data_keys=data_keys, uid=descriptor_uid,
-                        configuration=config, name=name,
+                        configuration=config, hints=hints, name=name,
                         object_keys=object_keys)
         self.log.debug("Emitted Event Descriptor with name %r containing "
                        "data keys %r (uid=%r)", name, data_keys.keys(),
@@ -1407,12 +1531,18 @@ class RunEngine:
         # read in this Event grouping.
         objs_read = frozenset(self._objs_read)
 
-        # Event Descriptor
-        if (self._bundle_name, objs_read) not in self._descriptors:
+        # Event Descriptor documents
+        desc_key = self._bundle_name
+        d_objs, doc = self._descriptors.get(desc_key, (None, None))
+        if d_objs is not None and d_objs != objs_read:
+            raise RuntimeError("Mismatched objects read, expected {!s}, "
+                               "got {!s}".format(d_objs, objs_read))
+        if doc is None:
             # We don't not have an Event Descriptor for this set.
             data_keys = {}
             config = {}
             object_keys = {}
+            hints = {}
             for obj in objs_read:
                 dks = self._describe_cache[obj]
                 name = obj.name
@@ -1425,41 +1555,80 @@ class RunEngine:
                 config[name]['data'] = self._config_values_cache[obj]
                 config[name]['timestamps'] = self._config_ts_cache[obj]
                 config[name]['data_keys'] = self._config_desc_cache[obj]
+                if hasattr(obj, 'hints'):
+                    hints[name] = obj.hints
             descriptor_uid = new_uid()
             doc = dict(run_start=self._run_start_uid, time=ttime.time(),
                        data_keys=data_keys, uid=descriptor_uid,
                        configuration=config, name=self._bundle_name,
-                       object_keys=object_keys)
+                       hints=hints, object_keys=object_keys)
             yield from self.emit(DocumentNames.descriptor, doc)
             self.log.debug("Emitted Event Descriptor with name %r containing "
                            "data keys %r (uid=%r)", self._bundle_name,
                            data_keys.keys(), descriptor_uid)
-            self._descriptors[(self._bundle_name, objs_read)] = descriptor_uid
-        else:
-            descriptor_uid = self._descriptors[(self._bundle_name, objs_read)]
+            self._descriptors[desc_key] = (objs_read, doc)
+
+        descriptor_uid = doc['uid']
+
         # This is a separate check because it can be reset on resume.
-        if objs_read not in self._sequence_counters:
+        seq_num_key = desc_key
+        if seq_num_key not in self._sequence_counters:
             counter = count(1)
             counter_copy1, counter_copy2 = tee(counter)
-            self._sequence_counters[objs_read] = counter_copy1
-            self._teed_sequence_counters[objs_read] = counter_copy2
+            self._sequence_counters[seq_num_key] = counter_copy1
+            self._teed_sequence_counters[seq_num_key] = counter_copy2
         self._bundling = False
         self._bundle_name = None
 
-        # Events
-        seq_num = next(self._sequence_counters[objs_read])
+        # Resource and Datum documents
+        for name, doc in self._asset_docs_cache:
+            # Add a 'run_start' field to the resource document on its way out.
+            if name == 'resource':
+                doc['run_start'] = self._run_start_uid
+            yield from self.emit(DocumentNames(name), doc)
+
+        # Event documents
+        seq_num = next(self._sequence_counters[seq_num_key])
         event_uid = new_uid()
         # Merge list of readings into single dict.
         readings = {k: v for d in self._read_cache for k, v in d.items()}
         for key in readings:
-            readings[key]['value'] = sanitize_np(readings[key]['value'])
+            readings[key]['value'] = readings[key]['value']
         data, timestamps = _rearrange_into_parallel_dicts(readings)
+        # Mark all externally-stored data as not filled so that consumers
+        # know that the corresponding data are identifies, not dereferenced
+        # data.
+        filled = {k: False
+                  for k, v in
+                  self._descriptors[desc_key][1]['data_keys'].items()
+                  if 'external' in v}
         doc = dict(descriptor=descriptor_uid,
                    time=ttime.time(), data=data, timestamps=timestamps,
-                   seq_num=seq_num, uid=event_uid)
+                   seq_num=seq_num, uid=event_uid, filled=filled)
         yield from self.emit(DocumentNames.event, doc)
         self.log.debug("Emitted Event with data keys %r (uid=%r)", data.keys(),
                        event_uid)
+
+    @asyncio.coroutine
+    def _drop(self, msg):
+        """Drop the event that is currently being bundled
+
+        Expected message object is:
+
+            Msg('drop')
+        """
+        if not self._bundling:
+            raise IllegalMessageSequence("A 'create' message must be sent, to "
+                                         "open an event bundle, before that "
+                                         "bundle can be dropped with 'drop'.")
+        if not self._run_is_open:
+            # sanity check -- this should be caught by 'create' which makes
+            # this code path impossible
+            raise IllegalMessageSequence("A 'drop' message was sent but no "
+                                         "run is open.")
+        self._bundling = False
+        self._bundle_name = None
+        self.log.debug("Dropped open event bundle")
 
     @asyncio.coroutine
     def _kickoff(self, msg):
@@ -1506,8 +1675,13 @@ class RunEngine:
                 self._status_object_completed, ret, p_event, pardon_failures)
             self._status_tasks.append(task)
 
-        ret.finished_cb = done_callback
+        try:
+            ret.add_callback(done_callback)
+        except AttributeError:
+            # for ophyd < v0.8.0
+            ret.finished_cb = done_callback
         self._groups[group].add(p_event.wait())
+        self._status_objs[group].add(ret)
         return ret
 
     @asyncio.coroutine
@@ -1541,8 +1715,13 @@ class RunEngine:
                 self._status_object_completed, ret, p_event, pardon_failures)
             self._status_tasks.append(task)
 
-        ret.finished_cb = done_callback
+        try:
+            ret.add_callback(done_callback)
+        except AttributeError:
+            # for ophyd < v0.8.0
+            ret.finished_cb = done_callback
         self._groups[group].add(p_event.wait())
+        self._status_objs[group].add(ret)
         return ret
 
     @asyncio.coroutine
@@ -1556,15 +1735,13 @@ class RunEngine:
             Msg('collect', obj, stream=True)
         """
         obj = msg.obj
-        if obj not in self._uncollected:
-            raise IllegalMessageSequence("The flyer %r was never kicked off "
-                                         "(or already collected)." % obj)
+
         if not self._run_is_open:
             # sanity check -- 'kickoff' should catch this and make this
             # code path impossible
             raise IllegalMessageSequence("A 'collect' message was sent but no "
                                          "run is open.")
-        self._uncollected.remove(obj)
+        self._uncollected.discard(obj)
 
         named_data_keys = obj.describe_collect()
         # e.g., {name_for_desc1: data_keys_for_desc1,
@@ -1572,23 +1749,35 @@ class RunEngine:
         bulk_data = {}
         local_descriptors = {}  # hashed on obj_read, not (name, objs_read)
         for stream_name, data_keys in named_data_keys.items():
-            objs_read = frozenset(data_keys)
-            if (stream_name, objs_read) not in self._descriptors:
+            desc_key = stream_name
+            d_objs = frozenset(data_keys)
+            if desc_key not in self._descriptors:
+                objs_read = d_objs
                 # We don't not have an Event Descriptor for this set.
                 descriptor_uid = new_uid()
+                object_keys = {obj.name: list(data_keys)}
+                hints = {}
+                if hasattr(obj, 'hints'):
+                    hints.update({obj.name: obj.hints})
                 doc = dict(run_start=self._run_start_uid, time=ttime.time(),
                            data_keys=data_keys, uid=descriptor_uid,
-                           name=stream_name)
+                           name=stream_name, hints=hints,
+                           object_keys=object_keys)
                 yield from self.emit(DocumentNames.descriptor, doc)
                 self.log.debug("Emitted Event Descriptor with name %r "
                                "containing data keys %r (uid=%r)", stream_name,
                                data_keys.keys(), descriptor_uid)
-                self._descriptors[(stream_name, objs_read)] = descriptor_uid
-                self._sequence_counters[objs_read] = count(1)
+                self._descriptors[desc_key] = (objs_read, doc)
+                self._sequence_counters[desc_key] = count(1)
             else:
-                descriptor_uid = self._descriptors[(stream_name, objs_read)]
+                objs_read, doc = self._descriptors[desc_key]
+            if d_objs != objs_read:
+                raise RuntimeError("Mismatched objects read, "
+                                   "expected {!s}, "
+                                   "got {!s}".format(d_objs, objs_read))
 
-            local_descriptors[objs_read] = descriptor_uid
+            descriptor_uid = doc['uid']
+            local_descriptors[objs_read] = (stream_name, descriptor_uid)
 
             bulk_data[descriptor_uid] = []
 
@@ -1597,13 +1786,14 @@ class RunEngine:
         stream = msg.kwargs.get('stream', False)
         for ev in obj.collect():
             objs_read = frozenset(ev['data'])
-            seq_num = next(self._sequence_counters[objs_read])
-            descriptor_uid = local_descriptors[objs_read]
+            stream_name, descriptor_uid = local_descriptors[objs_read]
+            seq_num = next(self._sequence_counters[stream_name])
+
             event_uid = new_uid()
 
             reading = ev['data']
             for key in ev['data']:
-                reading[key] = sanitize_np(reading[key])
+                reading[key] = reading[key]
             ev['data'] = reading
             ev['descriptor'] = descriptor_uid
             ev['seq_num'] = seq_num
@@ -1656,8 +1846,13 @@ class RunEngine:
                 self._status_object_completed, ret, p_event, pardon_failures)
             self._status_tasks.append(task)
 
-        ret.finished_cb = done_callback
+        try:
+            ret.add_callback(done_callback)
+        except AttributeError:
+            # for ophyd < v0.8.0
+            ret.finished_cb = done_callback
         self._groups[group].add(p_event.wait())
+        self._status_objs[group].add(ret)
 
         return ret
 
@@ -1683,8 +1878,13 @@ class RunEngine:
                 self._status_object_completed, ret, p_event, pardon_failures)
             self._status_tasks.append(task)
 
-        ret.finished_cb = done_callback
+        try:
+            ret.add_callback(done_callback)
+        except AttributeError:
+            # for ophyd < v0.8.0
+            ret.finished_cb = done_callback
         self._groups[group].add(p_event.wait())
+        self._status_objs[group].add(ret)
 
         return ret
 
@@ -1705,7 +1905,22 @@ class RunEngine:
             group = msg.kwargs['group']
         futs = list(self._groups.pop(group, []))
         if futs:
-            yield from self._wait_for(Msg('wait_for', None, futs))
+            status_objs = self._status_objs.pop(group)
+            try:
+                if self.waiting_hook is not None:
+                    # Notify the waiting_hook function that the RunEngine is
+                    # waiting for these status_objs to complete. Users can use
+                    # the information these encapsulate to create a progress
+                    # bar.
+                    self.waiting_hook(status_objs)
+                yield from self._wait_for(Msg('wait_for', None, futs))
+            finally:
+                if self.waiting_hook is not None:
+                    # Notify the waiting_hook function that we have moved on by
+                    # sending it `None`. If all goes well, it could have
+                    # inferred this from the status_obj, but there are edge
+                    # cases.
+                    self.waiting_hook(None)
 
     def _status_object_completed(self, ret, p_event, pardon_failures):
         """
@@ -1838,9 +2053,10 @@ class RunEngine:
         # Invalidate any event descriptors that include this object.
         # New event descriptors, with this new configuration, will
         # be created for any future event documents.
-        for name, obj_set in list(self._descriptors):
+        for name in list(self._descriptors):
+            obj_set, _ = self._descriptors[name]
             if obj in obj_set:
-                del self._descriptors[(name, obj_set)]
+                del self._descriptors[name]
 
         old, new = obj.configure(*args, **kwargs)
 
@@ -1903,7 +2119,7 @@ class RunEngine:
 
         Expected message object is:
 
-            Msg('subscribe', None, document_name, callback_function)
+            Msg('subscribe', None, callback_function, document_name)
 
         where `document_name` is one of:
 
@@ -1978,6 +2194,14 @@ class Dispatcher:
         self._token_mapping = dict()
 
     def process(self, name, doc):
+        """
+        Dispatch document ``doc`` of type ``name`` to the callback registry.
+
+        Parameters
+        ----------
+        name : {'start', 'descriptor', 'event', 'stop'}
+        doc : dict
+        """
         exceptions = self.cb_registry.process(name, name.name, doc)
         for exc, traceback in exceptions:
             warn("A %r was raised during the processing of a %s "
@@ -1986,26 +2210,51 @@ class Dispatcher:
                  "set RunEngine.ignore_callback_exceptions = False "
                  "and run again." % (exc, name.name))
 
-    def subscribe(self, name, func):
+    def subscribe(self, func, name='all'):
         """
         Register a callback function to consume documents.
 
-        The Run Engine can execute callback functions at the start and end
-        of a scan, and after the insertion of new Event Descriptors
-        and Events.
+        .. versionchanged :: 0.10.0
+            The order of the arguments was swapped and the ``name``
+            argument has been given a default value, ``'all'``. Because the
+            meaning of the arguments is unambigious (they must be a callable
+            and a string, respectively) the old order will be supported
+            indefeinitely, with a warning.
+
+        .. versionchanged :: 0.10.0
+            The order of the arguments was swapped and the ``name``
+            argument has been given a default value, ``'all'``. Because the
+            meaning of the arguments is unambigious (they must be a callable
+            and a string, respectively) the old order will be supported
+            indefeinitely, with a warning.
 
         Parameters
         ----------
-        name: {'start', 'descriptor', 'event', 'stop', 'all'}
         func: callable
             expecting signature like ``f(name, document)``
             where name is a string and document is a dict
+        name : {'all', 'start', 'descriptor', 'event', 'stop'}, optional
+            the type of document this function should receive ('all' by
+            default).
 
         Returns
         -------
         token : int
+            an integer ID that can be used to unsubscribe
+
+        See Also
+        --------
+        :meth:`Dispatcher.unsubscribe`
             an integer token that can be used to unsubscribe
         """
+        if callable(name) and isinstance(func, str):
+            name, func = func, name
+            warn("The order of the arguments has been changed. Because the "
+                 "meaning of the arguments is unambiguous, the old usage will "
+                 "continue to work indefinitely, but the new usage is "
+                 "encouraged: call subscribe(func, name) instead of "
+                 "subscribe(name, func). Additionally, the 'name' argument "
+                 "has become optional. Its default value is 'all'.")
         if name == 'all':
             private_tokens = []
             for key in DocumentNames:
@@ -2028,13 +2277,17 @@ class Dispatcher:
         Parameters
         ----------
         token : int
-            the integer token issued by `subscribe`
+            the integer ID issued by :meth:`Dispatcher.subscribe`
+
+        See Also
+        --------
+        :meth:`Dispatcher.subscribe`
         """
         for private_token in self._token_mapping[token]:
             self.cb_registry.disconnect(private_token)
 
     def unsubscribe_all(self):
-        """Unregister ALL callbacks from the dispatcher
+        """Unregister all callbacks from the dispatcher
         """
         for public_token in self._token_mapping.keys():
             self.unsubscribe(public_token)

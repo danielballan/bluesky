@@ -3,7 +3,7 @@ Event Descriptors
 
 In the section on :doc:`documents`, we gave an overview of the four kinds of
 document. We presented an example Run Start, Event, and Run Stop, but we
-deferred detailed discussion of the Event Descriptior.
+deferred detailed discussion of the Event Descriptor.
 
 Recall our example 'event' document.
 
@@ -137,6 +137,21 @@ happens to provide no configuration information.
              'data_keys': {}}}
      ...}
 
+Hints
+-----
+
+This is an experimental feature. Devices can provide information via a
+``hints`` attribute that is stored here. See :ref:`hints`.
+
+.. code-block:: python
+
+    # excerpt of a 'descriptor' document
+     {'hints':
+        {'x' {'fields': ['x_readback']},
+         'temp_ctrl': {'fields': ['temperature']}}
+      ...}
+
+
 Complete Sample
 ---------------
 
@@ -186,6 +201,9 @@ Taken together, our example 'descriptor' document looks like this.
              'data_keys': {}}}
          }
 
+     'hints':
+        {'x' {'fields': ['x_readback']},
+         'temp_ctrl': {'fields': ['temperature']}}
 
      'time': 1442521007.3438923,
      'uid': '<randomly-generated unique ID>', 

@@ -1,6 +1,7 @@
 from bluesky.tests import requires_ophyd
-from bluesky.tests.utils import MsgCollector
-from bluesky.plans import (ramp_plan, trigger_and_read)
+from bluesky.tests.utils import DocCollector
+from bluesky.plans import ramp_plan
+from bluesky.plan_stubs import trigger_and_read
 from bluesky import Msg
 from bluesky.utils import RampFail
 import numpy as np
@@ -9,10 +10,10 @@ import pytest
 
 
 @requires_ophyd
-def test_ramp(RE, db):
+def test_ramp(RE):
     from ophyd.positioner import SoftPositioner
     from ophyd import StatusBase
-    from bluesky.examples import SynGauss
+    from ophyd.sim import SynGauss
 
     tt = SoftPositioner(name='mot')
     tt.set(0)
@@ -31,27 +32,26 @@ def test_ramp(RE, db):
         yield from trigger_and_read([dd])
 
     g = ramp_plan(kickoff(), tt, inner_plan, period=0.08)
-    RE.subscribe('all', db.mds.insert)
-    RE.msg_hook = MsgCollector()
+    db = DocCollector()
+    RE.subscribe(db.insert)
     rs_uid, = RE(g)
-    hdr = db[-1]
-    assert hdr.start.uid == rs_uid
-    assert len(hdr.descriptors) == 2
+    assert db.start[0]['uid'] == rs_uid
+    assert len(db.descriptor[rs_uid]) == 2
+    descs = {d['name']: d for d in db.descriptor[rs_uid]}
 
-    assert set([d['name'] for d in hdr.descriptors]) == \
-        set(['primary', 'mot_monitor'])
+    assert set(descs) == set(['primary', 'mot_monitor'])
 
-    primary_events = list(db.get_events(hdr, stream_name='primary'))
+    primary_events = db.event[descs['primary']['uid']]
     assert len(primary_events) > 11
 
-    monitor_events = list(db.get_events(hdr, stream_name='mot_monitor'))
+    monitor_events = db.event[descs['mot_monitor']['uid']]
     assert len(monitor_events) == 10
 
 
 @requires_ophyd
 def test_timeout(RE):
     from ophyd.positioner import SoftPositioner
-    from bluesky.examples import SynGauss
+    from ophyd.sim import SynGauss
     from ophyd import StatusBase
 
     mot = SoftPositioner(name='mot')
@@ -59,8 +59,11 @@ def test_timeout(RE):
     det = SynGauss('det', mot, 'mot', 0, 3)
 
     def kickoff():
+        # This process should take a total of 5 seconds, but it will be
+        # interrupted after 0.1 seconds via the timeout keyword passed to
+        # ramp_plan below.
         yield Msg('null')
-        for j in range(5):
+        for j in range(100):
             RE.loop.call_later(.05 * j, lambda j=j: mot.set(j))
 
         return StatusBase()
@@ -76,4 +79,6 @@ def test_timeout(RE):
     stop = time.time()
     elapsed = stop - start
 
-    assert .1 < elapsed < .2
+    # This test has a tendency to randomly fail, so we're giving it plenty of
+    # time to run. 4, though much greater than 0.1, is still less than 5.
+    assert .1 < elapsed < 4

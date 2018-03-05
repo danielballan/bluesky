@@ -1,15 +1,15 @@
 import asyncio
 from bluesky.run_engine import RunEngine
-from bluesky.examples import Mover, SynGauss
+import numpy as np
+import os
 import pytest
 
 
 @pytest.fixture(scope='function')
-def fresh_RE(request):
+def RE(request):
     loop = asyncio.new_event_loop()
     loop.set_debug(True)
     RE = RunEngine({}, loop=loop)
-    RE.ignore_callback_exceptions = False
 
     def clean_event_loop():
         if RE.state != 'idle':
@@ -21,45 +21,41 @@ def fresh_RE(request):
     request.addfinalizer(clean_event_loop)
     return RE
 
-RE = fresh_RE
-
 
 @pytest.fixture(scope='function')
-def motor_det(request):
-    motor = Mover('motor', {'motor': lambda x: x}, {'x': 0})
-    det = SynGauss('det', motor, 'motor', center=0, Imax=1,
-                   sigma=1, exposure_time=0)
-    return motor, det
+def hw(request):
+    from ophyd.sim import hw
+    return hw()
+
+
+# vendored from ophyd.sim
+class NumpySeqHandler:
+    specs = {'NPY_SEQ'}
+
+    def __init__(self, filename, root=''):
+        self._name = os.path.join(root, filename)
+
+    def __call__(self, index):
+        return np.load('{}_{}.npy'.format(self._name, index))
+
+    def get_file_list(self, datum_kwarg_gen):
+        "This method is optional. It is not needed for access, but for export."
+        return ['{name}_{index}.npy'.format(name=self._name, **kwargs)
+                for kwargs in datum_kwarg_gen]
 
 
 @pytest.fixture(scope='function')
 def db(request):
     """Return a data broker
     """
-    from portable_mds.sqlite.mds import MDS
-    from filestore.utils import install_sentinels
-    import filestore.fs
-    from databroker import Broker
-    import tempfile
-    import shutil
-    from uuid import uuid4
-    td = tempfile.mkdtemp()
-    db_name = "fs_testing_v1_disposable_{}".format(str(uuid4()))
-    test_conf = dict(database=db_name, host='localhost',
-                     port=27017)
-    install_sentinels(test_conf, 1)
-    fs = filestore.fs.FileStoreMoving(test_conf,
-                                      version=1)
+    from databroker.tests.utils import build_sqlite_backed_broker
+    db = build_sqlite_backed_broker(request)
+    db.reg.register_handler('NPY_SEQ', NumpySeqHandler)
+    return db
 
-    def delete_dm():
-        print("DROPPING DB")
-        fs._connection.drop_database(db_name)
 
-    request.addfinalizer(delete_dm)
-
-    def delete_tmpdir():
-        shutil.rmtree(td)
-
-    request.addfinalizer(delete_tmpdir)
-
-    return Broker(MDS({'directory': td, 'timezone': 'US/Eastern'}), fs)
+@pytest.fixture(autouse=True)
+def cleanup_any_figures(request):
+    import matplotlib.pyplot as plt
+    "Close any matplotlib figures that were opened during a test."
+    plt.close('all')

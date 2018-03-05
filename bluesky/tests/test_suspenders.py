@@ -1,11 +1,11 @@
 import pytest
-import ophyd
 import asyncio
 from functools import partial
 from bluesky.suspenders import (SuspendBoolHigh,
                                 SuspendBoolLow,
                                 SuspendFloor,
                                 SuspendCeil,
+                                SuspendWhenOutsideBand,
                                 SuspendInBand,
                                 SuspendOutBand)
 from bluesky.tests.utils import MsgCollector
@@ -20,13 +20,13 @@ import time
      (SuspendBoolLow, (), 1, 0, 1, .2),
      (SuspendFloor, (.5,), 1, 0, 1, .2),
      (SuspendCeil, (.5,), 0, 1, 0, .2),
-     (SuspendInBand, (.5, 1.5), 1, 0, 1, .2),
-     (SuspendOutBand, (.5, 1.5), 0, 1, 0, .2)])
+     (SuspendWhenOutsideBand, (.5, 1.5), 1, 0, 1, .2),
+     (SuspendInBand, (.5, 1.5), 1, 0, 1, .2),  # renamed to WhenOutsideBand
+     (SuspendOutBand, (.5, 1.5), 0, 1, 0, .2)])  # deprecated
 def test_suspender(klass, sc_args, start_val, fail_val,
-                   resume_val, wait_time, fresh_RE):
-    RE = fresh_RE
+                   resume_val, wait_time, RE, hw):
     loop = RE._loop
-    sig = ophyd.Signal()
+    sig = hw.bool_sig
     my_suspender = klass(sig,
                          *sc_args, sleep=wait_time)
     my_suspender.install(RE)
@@ -55,10 +55,9 @@ def test_suspender(klass, sc_args, start_val, fail_val,
     assert delta > .5 + wait_time + .2
 
 
-def test_pretripped(fresh_RE):
+def test_pretripped(RE, hw):
     'Tests if suspender is tripped before __call__'
-    RE = fresh_RE
-    sig = ophyd.Signal()
+    sig = hw.bool_sig
     scan = [Msg('checkpoint')]
     msg_lst = []
     sig.put(1)
@@ -79,17 +78,19 @@ def test_pretripped(fresh_RE):
 
 @pytest.mark.parametrize('pre_plan,post_plan,expected_list',
                          [([Msg('null')], None,
-                           ['checkpoint', 'sleep', 'null',
-                            'wait_for', 'sleep']),
+                           ['checkpoint', 'sleep', 'rewindable', 'null',
+                            'wait_for', 'rewindable', 'sleep']),
                           (None, [Msg('null')],
-                           ['checkpoint', 'sleep',
-                            'wait_for', 'null', 'sleep']),
+                           ['checkpoint', 'sleep', 'rewindable',
+                            'wait_for', 'null', 'rewindable', 'sleep']),
                           ([Msg('null')], [Msg('null')],
-                           ['checkpoint', 'sleep', 'null',
-                            'wait_for', 'null', 'sleep'])])
-def test_pre_suspend_plan(fresh_RE, pre_plan, post_plan, expected_list):
-    RE = fresh_RE
-    sig = ophyd.Signal()
+                           ['checkpoint', 'sleep', 'rewindable', 'null',
+                            'wait_for', 'null', 'rewindable', 'sleep']),
+                          (lambda: [Msg('null')], lambda: [Msg('null')],
+                           ['checkpoint', 'sleep', 'rewindable', 'null',
+                            'wait_for', 'null', 'rewindable', 'sleep'])])
+def test_pre_suspend_plan(RE, pre_plan, post_plan, expected_list, hw):
+    sig = hw.bool_sig
     scan = [Msg('checkpoint'), Msg('sleep', None, .2)]
     msg_lst = []
     sig.put(0)
@@ -119,10 +120,9 @@ def test_pre_suspend_plan(fresh_RE, pre_plan, post_plan, expected_list):
     assert not RE.suspenders
 
 
-def test_pause_from_suspend(fresh_RE):
+def test_pause_from_suspend(RE, hw):
     'Tests what happens when a pause is requested from a suspended state'
-    RE = fresh_RE
-    sig = ophyd.Signal()
+    sig = hw.bool_sig
     scan = [Msg('checkpoint')]
     msg_lst = []
     sig.put(1)
@@ -136,16 +136,16 @@ def test_pause_from_suspend(fresh_RE):
     RE._loop.call_later(1, RE.request_pause)
     RE._loop.call_later(2, sig.put, 0)
     RE.msg_hook = accum
-    RE(scan)
+    with pytest.raises(RunEngineInterrupted):
+        RE(scan)
     assert [m[0] for m in msg_lst] == ['wait_for']
     RE.resume()
     assert ['wait_for', 'wait_for', 'checkpoint'] == [m[0] for m in msg_lst]
 
 
-def test_deferred_pause_from_suspend(fresh_RE):
+def test_deferred_pause_from_suspend(RE, hw):
     'Tests what happens when a soft pause is requested from a suspended state'
-    RE = fresh_RE
-    sig = ophyd.Signal()
+    sig = hw.bool_sig
     scan = [Msg('checkpoint'), Msg('null')]
     msg_lst = []
     sig.put(1)
@@ -160,15 +160,15 @@ def test_deferred_pause_from_suspend(fresh_RE):
     RE._loop.call_later(1, RE.request_pause, True)
     RE._loop.call_later(4, sig.put, 0)
     RE.msg_hook = accum
-    RE(scan)
+    with pytest.raises(RunEngineInterrupted):
+        RE(scan)
     assert [m[0] for m in msg_lst] == ['wait_for', 'checkpoint']
     RE.resume()
     assert ['wait_for', 'checkpoint', 'null'] == [m[0] for m in msg_lst]
 
 
-def test_unresumable_suspend_fail(fresh_RE):
+def test_unresumable_suspend_fail(RE):
     'Tests what happens when a soft pause is requested from a suspended state'
-    RE = fresh_RE
 
     scan = [Msg('clear_checkpoint'), Msg('sleep', None, 50)]
     m_coll = MsgCollector()
@@ -180,6 +180,6 @@ def test_unresumable_suspend_fail(fresh_RE):
     loop.call_later(1, ev.set)
     start = time.time()
     with pytest.raises(RunEngineInterrupted):
-        RE(scan, raise_if_interrupted=True)
+        RE(scan)
     stop = time.time()
     assert .1 < stop - start < 1

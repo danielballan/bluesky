@@ -1,55 +1,59 @@
 from collections import defaultdict
-from bluesky.run_engine import Msg
-from bluesky.examples import (motor, det, stepscan, motor1, motor2, det4)
-from bluesky.plans import (AdaptiveAbsScanPlan, AbsScanPlan, scan,
-                           outer_product_scan, run_wrapper, pause,
-                           subs_wrapper)
+from bluesky.run_engine import Msg, RunEngineInterrupted
+from bluesky.examples import stepscan
+from bluesky.plans import (scan, grid_scan, count, inner_product_scan)
+from bluesky.object_plans import AbsScanPlan
+from bluesky.preprocessors import run_wrapper, subs_wrapper
+from bluesky.plan_stubs import pause
+import bluesky.plans as bp
 from bluesky.callbacks import (CallbackCounter, LiveTable, LiveFit,
-                               LiveFitPlot, LivePlot)
-from bluesky.callbacks.zmqpub import Publisher
-from bluesky.callbacks.zmqsub import RemoteDispatcher
-from bluesky.tests.utils import _print_redirect, MsgCollector
-import multiprocessing
+                               LiveFitPlot, LivePlot, LiveGrid, LiveScatter)
+from bluesky.callbacks import LiveMesh, LiveRaster  # deprecated but tested
+from bluesky.callbacks.broker import BrokerCallbackBase
+from bluesky.callbacks import CallbackBase
+from bluesky.tests.utils import _print_redirect, MsgCollector, DocCollector
+import signal
+import threading
 import time
 import pytest
 import numpy as np
 import matplotlib.pyplot as plt
+from sqlite3 import InterfaceError
 
 
 def exception_raiser(name, doc):
     raise Exception("it's an exception that better not kill the scan!!")
 
 
-def test_all(fresh_RE):
-    RE = fresh_RE
+def test_all(RE, hw):
     c = CallbackCounter()
-    RE(stepscan(det, motor), subs={'all': c})
+    RE(stepscan(hw.det, hw.motor), {'all': c})
     assert c.value == 10 + 1 + 2  # events, descriptor, start and stop
 
     c = CallbackCounter()
-    token = RE.subscribe('all', c)
-    RE(stepscan(det, motor))
+    token = RE.subscribe(c)
+    RE(stepscan(hw.det, hw.motor))
     RE.unsubscribe(token)
     assert c.value == 10 + 1 + 2
 
 
-def test_raising_ignored_or_not(fresh_RE):
-    RE = fresh_RE
+def test_raising_ignored_or_not(RE, hw):
     RE.ignore_callback_exceptions = True
     assert RE.ignore_callback_exceptions
 
     def cb(name, doc):
         raise Exception
+
     # by default (with ignore... = True) it warns
     with pytest.warns(UserWarning):
-        RE(stepscan(det, motor), subs=cb)
+        RE(stepscan(hw.det, hw.motor), cb)
 
     RE.ignore_callback_exceptions = False
     with pytest.raises(Exception):
-        RE(stepscan(det, motor), subs={'all': cb})
+        RE(stepscan(hw.det, hw.motor), cb)
 
 
-def test_subs_input():
+def test_subs_input(hw):
     def cb1(name, doc):
         pass
 
@@ -62,15 +66,17 @@ def test_subs_input():
     def cb_fact4(scan):
         def cb4(name, doc):
             pass
+
         return cb4
 
     def cb_fact5(scan):
         def cb5(name, doc):
             pass
+
         return cb5
 
     # Test input normalization on OO plans
-    obj_ascan = AbsScanPlan([det], motor, 1, 5, 4)
+    obj_ascan = AbsScanPlan([hw.det], hw.motor, 1, 5, 4)
     obj_ascan.subs = cb1
     assert obj_ascan.subs == {'all': [cb1], 'start': [], 'stop': [],
                               'descriptor': [], 'event': []}
@@ -82,35 +88,34 @@ def test_subs_input():
                               'descriptor': [], 'event': []}
 
 
-def test_subscribe_msg(fresh_RE):
-    RE = fresh_RE
+def test_subscribe_msg(RE, hw):
     assert RE.state == 'idle'
     c = CallbackCounter()
 
     def counting_stepscan(det, motor):
-        yield Msg('subscribe', None, 'start', c)
+        yield Msg('subscribe', None, c, 'start')
         yield from stepscan(det, motor)
 
-    RE(counting_stepscan(det, motor))  # should advance c
+    RE(counting_stepscan(hw.det, hw.motor))  # should advance c
     assert c.value == 1
-    RE(counting_stepscan(det, motor))  # should advance c
+    RE(counting_stepscan(hw.det, hw.motor))  # should advance c
     assert c.value == 2
-    RE(stepscan(det, motor))  # should not
+    RE(stepscan(hw.det, hw.motor))  # should not
     assert c.value == 2
 
 
-def test_unknown_cb_raises(fresh_RE):
-    RE = fresh_RE
+def test_unknown_cb_raises(RE):
 
     def f(name, doc):
         pass
+
     with pytest.raises(KeyError):
-        RE.subscribe('not a thing', f)
+        RE.subscribe(f, 'not a thing')
     # back-compat alias for subscribe
     with pytest.raises(KeyError):
-        RE.subscribe_lossless('not a thing', f)
+        RE.subscribe_lossless(f, 'not a thing')
     with pytest.raises(KeyError):
-        RE._subscribe_lossless('not a thing', f)
+        RE._subscribe_lossless(f, 'not a thing')
 
 
 def test_table_warns():
@@ -121,18 +126,20 @@ def test_table_warns():
                              'data_keys': {'field': {'dtype': 'array'}}})
 
 
-def test_table(fresh_RE):
-    RE = fresh_RE
+def test_table(RE, hw):
 
     with _print_redirect() as fout:
-        det.precision = 2
-        motor.precision = 2
+        hw.det.precision = 2
+        hw.motor.precision = 2
+        assert hw.det.describe()['det']['precision'] == 2
+        assert hw.motor.describe()['motor']['precision'] == 2
 
         table = LiveTable(['det', 'motor'], min_width=16, extra_pad=2)
-        ad_scan = AdaptiveAbsScanPlan([det], 'det', motor, -15, 5, .01, 1, .05,
-                                      True)
+        ad_scan = bp.adaptive_scan([hw.det], 'det', hw.motor,
+                                   -15, 5, .01, 1, .05,
+                                   True)
         # use lossless sub here because rows can get dropped
-        token = RE.subscribe_lossless('all', table)
+        token = RE.subscribe(table)
         RE(ad_scan)
         RE.unsubscribe_lossless(token)
 
@@ -150,6 +157,12 @@ def test_table(fresh_RE):
             # this is easier than faking up times in the scan!
             assert ln[:16] == kn[:16]
             assert ln[26:] == kn[26:]
+
+
+def test_table_external(RE, hw, db):
+    RE.subscribe(db.insert)
+    hw.img.reg = db.reg
+    RE(count([hw.img]), LiveTable(['img']))
 
 
 KNOWN_TABLE = """+------------+--------------+----------------+----------------+
@@ -231,107 +244,14 @@ KNOWN_TABLE = """+------------+--------------+----------------+----------------+
 +------------+--------------+----------------+----------------+"""
 
 
-def test_zmq(fresh_RE):
-    # COMPONENT 1
-    # Run a forwarder device on a separate process.
-    # This is a variant of the code in bluesky/examples/forwarder_device.py,
-    # but with hard-coded config.
-
-    def forwarder():
-        import zmq
-
-        def main(frontend_port, backend_port):
-            print('Starting forwarder device...')
-            try:
-                context = zmq.Context(1)
-                # Socket facing clients
-                frontend = context.socket(zmq.SUB)
-                frontend.bind("tcp://*:%d" % frontend_port)
-
-                frontend.setsockopt_string(zmq.SUBSCRIBE, "")
-
-                # Socket facing services
-                backend = context.socket(zmq.PUB)
-                backend.bind("tcp://*:%d" % backend_port)
-
-                print('Receiving on %d; publishing on %d' % (frontend_port,
-                                                             backend_port))
-                zmq.device(zmq.FORWARDER, frontend, backend)
-            except Exception as exc:
-                print('Exception in forwarder device:', exc)
-            finally:
-                print('Closing forwarder device...')
-                frontend.close()
-                backend.close()
-                context.term()
-
-        main(5567, 5568)
-    forwarder_proc = multiprocessing.Process(target=forwarder, daemon=True)
-    forwarder_proc.start()
-    time.sleep(5)  # Give this plenty of time to start up.
-
-    # COMPONENT 2
-    # Run a Publisher and a RunEngine in this main process.
-
-    RE = fresh_RE
-    p = Publisher(RE, '127.0.0.1', 5567)  # noqa
-
-    # COMPONENT 3
-    # Run a RemoteDispatcher on another separate process. Pass the documents
-    # it receives over a Queue to this process, so we can count them for our
-    # test.
-
-    def make_and_start_dispatcher(queue):
-        def put_in_queue(name, doc):
-            print('putting ', name, 'in queue')
-            queue.put((name, doc))
-        d = RemoteDispatcher('127.0.0.1', 5568)
-        d.subscribe('all', put_in_queue)
-        print("REMOTE IS READY TO START")
-        d._loop.call_later(9, d.stop)
-        d.start()
-
-    queue = multiprocessing.Queue()
-    dispatcher_proc = multiprocessing.Process(target=make_and_start_dispatcher,
-                                              daemon=True, args=(queue,))
-    dispatcher_proc.start()
-    time.sleep(5)  # As above, give this plenty of time to start.
-
-    # Generate two documents. The Publisher will send them to the forwarder
-    # device over 5567, and the forwarder will send them to the
-    # RemoteDispatcher over 5568. The RemoteDispatcher will push them into
-    # the queue, where we can verify that they round-tripped.
-
-    local_accumulator = []
-
-    def local_cb(name, doc):
-        local_accumulator.append((name, doc))
-
-    RE([Msg('open_run'), Msg('close_run')], local_cb)
-    time.sleep(1)
-
-    # Get the two documents from the queue (or timeout --- test will fail)
-    remote_accumulator = []
-    for i in range(2):
-        remote_accumulator.append(queue.get(timeout=2))
-    p.close()
-    forwarder_proc.terminate()
-    dispatcher_proc.terminate()
-    forwarder_proc.join()
-    dispatcher_proc.join()
-    assert remote_accumulator == local_accumulator
-
-
-def test_live_fit(fresh_RE, motor_det):
-    RE = fresh_RE
-    motor, det = motor_det
+def test_live_fit(RE, hw):
     try:
         import lmfit
     except ImportError:
         raise pytest.skip('requires lmfit')
 
     def gaussian(x, A, sigma, x0):
-        return A*np.exp(-(x - x0)**2/(2 * sigma**2))
+        return A * np.exp(-(x - x0) ** 2 / (2 * sigma ** 2))
 
     model = lmfit.Model(gaussian)
     init_guess = {'A': 2,
@@ -339,7 +259,7 @@ def test_live_fit(fresh_RE, motor_det):
                   'x0': -0.2}
     cb = LiveFit(model, 'det', {'x': 'motor'}, init_guess,
                  update_every=50)
-    RE(scan([det], motor, -1, 1, 50), cb)
+    RE(scan([hw.det], hw.motor, -1, 1, 50), cb)
     # results are in cb.result.values
 
     expected = {'A': 1, 'sigma': 1, 'x0': 0}
@@ -347,20 +267,19 @@ def test_live_fit(fresh_RE, motor_det):
         assert np.allclose(cb.result.values[k], v, atol=1e-6)
 
 
-def test_live_fit_multidim(fresh_RE):
-    RE = fresh_RE
+def test_live_fit_multidim(RE, hw):
 
     try:
         import lmfit
     except ImportError:
         raise pytest.skip('requires lmfit')
 
-    motor1._fake_sleep = 0
-    motor2._fake_sleep = 0
-    det4.exposure_time = 0
+    hw.motor1.delay = 0
+    hw.motor2.delay = 0
+    hw.det4.exposure_time = 0
 
     def gaussian(x, y, A, sigma, x0, y0):
-        return A*np.exp(-((x - x0)**2 + (y - y0)**2)/(2 * sigma**2))
+        return A * np.exp(-((x - x0) ** 2 + (y - y0) ** 2) / (2 * sigma ** 2))
 
     model = lmfit.Model(gaussian, ['x', 'y'])
     init_guess = {'A': 2,
@@ -369,7 +288,9 @@ def test_live_fit_multidim(fresh_RE):
                   'y0': 0.3}
     cb = LiveFit(model, 'det4', {'x': 'motor1', 'y': 'motor2'}, init_guess,
                  update_every=50)
-    RE(outer_product_scan([det4], motor1, -1, 1, 10, motor2, -1, 1, 10, False),
+    RE(grid_scan([hw.det4],
+                 hw.motor1, -1, 1, 10,
+                 hw.motor2, -1, 1, 10, False),
        cb)
 
     expected = {'A': 1, 'sigma': 1, 'x0': 0, 'y0': 0}
@@ -377,15 +298,14 @@ def test_live_fit_multidim(fresh_RE):
         assert np.allclose(cb.result.values[k], v, atol=1e-6)
 
 
-def test_live_fit_plot(fresh_RE):
-    RE = fresh_RE
+def test_live_fit_plot(RE, hw):
     try:
         import lmfit
     except ImportError:
         raise pytest.skip('requires lmfit')
 
     def gaussian(x, A, sigma, x0):
-        return A*np.exp(-(x - x0)**2/(2 * sigma**2))
+        return A * np.exp(-(x - x0) ** 2 / (2 * sigma ** 2))
 
     model = lmfit.Model(gaussian)
     init_guess = {'A': 2,
@@ -395,8 +315,7 @@ def test_live_fit_plot(fresh_RE):
                       update_every=50)
     lfplot = LiveFitPlot(livefit, color='r')
     lplot = LivePlot('det', 'motor', ax=plt.gca(), marker='o', ls='none')
-    RE(scan([det], motor, -1, 1, 50), [lplot, lfplot])
-
+    RE(scan([hw.det], hw.motor, -1, 1, 50), [lplot, lfplot])
     expected = {'A': 1, 'sigma': 1, 'x0': 0}
     for k, v in expected.items():
         assert np.allclose(livefit.result.values[k], v, atol=1e-6)
@@ -406,9 +325,8 @@ def test_live_fit_plot(fresh_RE):
                          [('stop', 1, 5),
                           ('abort', 1, 5),
                           ('halt', 1, 3)])
-def test_intreupted_with_callbacks(fresh_RE, int_meth,
-                                   stop_num, msg_num):
-    RE = fresh_RE
+def test_interrupted_with_callbacks(RE, int_meth,
+                                    stop_num, msg_num):
 
     docs = defaultdict(list)
 
@@ -417,8 +335,10 @@ def test_intreupted_with_callbacks(fresh_RE, int_meth,
         docs[name].append(doc)
 
     RE.msg_hook = MsgCollector()
-    RE(subs_wrapper(run_wrapper(pause()),
-                    {'all': collector_cb}))
+
+    with pytest.raises(RunEngineInterrupted):
+        RE(subs_wrapper(run_wrapper(pause()),
+                        {'all': collector_cb}))
     getattr(RE, int_meth)()
 
     assert len(docs['start']) == 1
@@ -426,3 +346,106 @@ def test_intreupted_with_callbacks(fresh_RE, int_meth,
     assert len(docs['descriptor']) == 0
     assert len(docs['stop']) == stop_num
     assert len(RE.msg_hook.msgs) == msg_num
+
+
+def test_live_grid(RE, hw):
+    hw.motor1.delay = 0
+    hw.motor2.delay = 0
+    RE(grid_scan([hw.det4],
+                 hw.motor1, -3, 3, 6,
+                 hw.motor2, -5, 5, 10, False),
+       LiveGrid((6, 10), 'det4'))
+
+    # Test the deprecated name.
+    with pytest.warns(UserWarning):
+        RE(grid_scan([hw.det4], hw.motor1, -3, 3, 6, hw.motor2,
+                     -5, 5, 10, False),
+           LiveRaster((6, 10), 'det4'))
+
+
+def test_live_scatter(RE, hw):
+    RE(grid_scan([hw.det5],
+                 hw.jittery_motor1, -3, 3, 6,
+                 hw.jittery_motor2, -5, 5, 10, False),
+       LiveScatter('jittery_motor1', 'jittery_motor2', 'det5',
+                   xlim=(-3, 3), ylim=(-5, 5)))
+
+    # Test the deprecated name.
+    with pytest.warns(UserWarning):
+        RE(grid_scan([hw.det5],
+                     hw.jittery_motor1, -3, 3, 6,
+                     hw.jittery_motor2, -5, 5, 10, False),
+           LiveMesh('jittery_motor1', 'jittery_motor2', 'det5',
+                    xlim=(-3, 3), ylim=(-5, 5)))
+
+
+@pytest.mark.xfail(raises=InterfaceError,
+                   reason='something funny going on with 3.5, 3.6 and sqlite')
+def test_broker_base(RE, hw, db):
+    class BrokerChecker(BrokerCallbackBase):
+        def __init__(self, field, *, db=None):
+            super().__init__(field, db=db)
+
+        def event(self, doc):
+            super().event(doc)
+            assert isinstance(doc['data'][self.fields[0]], np.ndarray)
+
+    RE.subscribe(db.insert)
+    bc = BrokerChecker(('img',), db=db)
+    RE.subscribe(bc)
+    hw.img.reg = db.reg
+    RE(count([hw.img]))
+
+
+def test_broker_base_no_unpack(RE, hw, db):
+    class BrokerChecker(BrokerCallbackBase):
+        def __init__(self, field, *, db=None):
+            super().__init__(field, db=db)
+
+        def event(self, doc):
+            super().event(doc)
+            assert isinstance(doc['data'][self.fields[0]], np.ndarray)
+
+    bc = BrokerChecker(('img',), db=db)
+    RE.subscribe(bc)
+    RE(count([hw.direct_img]))
+
+
+def test_plotting_hints(RE, hw, db):
+    ''' This tests the run and checks that the correct hints are created.
+        Hints are mainly created to help the BestEffortCallback in plotting the
+        data.
+        Use a callback to do the checking.
+    '''
+    dc = DocCollector()
+    RE.subscribe(dc.insert)
+
+    # check that the inner product hints are passed correctly
+    hint = {'dimensions': [([hw.motor1.name, hw.motor2.name, hw.motor3.name],
+                            'primary')]}
+    RE(inner_product_scan([hw.det], 20, hw.motor1, -1, 1, hw.motor2, -1, 1,
+                          hw.motor3, -2, 0))
+    assert dc.start[-1]['hints'] == hint
+
+    # check that the outer product (grid_scan) hints are passed correctly
+    hint = {'dimensions': [(['motor1'], 'primary'),
+                           (['motor2'], 'primary'),
+                           (['motor3'], 'primary')]}
+    # grid_scan passes "rectilinear" gridding as well
+    # make sure this is also passed
+    output_hint = hint.copy()
+    output_hint['gridding'] = 'rectilinear'
+    RE(grid_scan([hw.det], hw.motor1, -1, 1, 2, hw.motor2, -1, 1, 2,
+                 True, hw.motor3, -2, 0, 2, True))
+
+    assert dc.start[-1]['hints'] == output_hint
+
+    # check that if gridding is supplied, it's not overwritten by grid_scan
+    # check that the outer product (grid_scan) hints are passed correctly
+    hint = {'dimensions': [(['motor1'], 'primary'),
+                           (['motor2'], 'primary'),
+                           (['motor3'], 'primary')],
+            'gridding': 'rectilinear'}
+    RE(grid_scan([hw.det], hw.motor1, -1, 1, 2, hw.motor2, -1, 1, 2,
+                 True, hw.motor3, -2, 0, 2, True))
+    assert dc.start[-1]['hints'] == hint

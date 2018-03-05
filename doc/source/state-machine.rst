@@ -21,18 +21,43 @@ Pause Now: Ctrl+C twice
 
 .. code-block:: python
 
-    In [1]: RE(scan([det], motor, -10, 10, 15), LiveTable([motor, det]))
+    In [14]: RE(scan([det], motor, 1, 10, 10))
+    Transient Scan ID: 2     Time: 2018/02/12 12:43:12
+    Persistent Unique Scan ID: '33a16823-e214-4952-abdd-032a78b8478f'
+    New stream: 'primary'
     +-----------+------------+------------+------------+
     |   seq_num |       time |      motor |        det |
     +-----------+------------+------------+------------+
-    |         1 | 07:21:29.2 |    -10.000 |      0.000 |
-    |         2 | 07:21:29.3 |     -8.571 |      0.000 |
-    |         3 | 07:21:29.4 |     -7.143 |      0.000 |
-    ^C^C
+    |         1 | 12:43:13.3 |      1.000 |      0.607 |
+    |         2 | 12:43:14.3 |      2.000 |      0.135 |
+    |         3 | 12:43:15.3 |      3.000 |      0.011 |
+    ^C
+    A 'deferred pause' has been requested. The RunEngine will pause at the next checkpoint. To pause immediately, hit Ctrl+C again in the next 10 seconds.
+    Deferred pause acknowledged. Continuing to checkpoint.
+    ^C
     Pausing...
-    In [2]:
+    ---------------------------------------------------------------------------
+    RunEngineInterrupted                      Traceback (most recent call last)
+    <ipython-input-14-826ee9dfb918> in <module>()
+    ----> 1 RE(scan([det], motor, 1, 10, 10))
 
-Before returning the prompt the user, the RunEngine ensures that all motors
+    ~/Documents/Repos/bluesky/bluesky/run_engine.py in __call__(self, *args, **metadata_kw)
+        670
+        671             if self._interrupted:
+    --> 672                 raise RunEngineInterrupted(self.pause_msg) from None
+        673
+        674         return tuple(self._run_start_uids)
+
+    RunEngineInterrupted:
+    Your RunEngine is entering a paused state. These are your options for changing
+    the state of the RunEngine:
+
+    RE.resume()    Resume the plan.
+    RE.abort()     Perform cleanup, then kill plan. Mark exit_stats='aborted'.
+    RE.stop()      Perform cleanup, then kill plan. Mark exit_status='success'.
+    RE.halt()      Emergency Stop: Do not perform cleanup --- just stop.
+
+Before returning the prompt to the user, the RunEngine ensures that all motors
 that it has touched are stopped. It also performs any device-specific cleanup
 defined in the device's (optional) ``pause()`` method.
 
@@ -51,20 +76,40 @@ to complete before execution is paused.
 
 .. code-block:: python
 
-    In [1]: RE(scan([det], motor, -10, 10, 15), LiveTable([motor, det]))
+    In [12]: RE(scan([det], motor, 1, 10, 10))
+    Transient Scan ID: 1     Time: 2018/02/12 12:40:36
+    Persistent Unique Scan ID: 'c5db9bb4-fb7f-49f4-948b-72fb716d1f67'
+    New stream: 'primary'
     +-----------+------------+------------+------------+
     |   seq_num |       time |      motor |        det |
     +-----------+------------+------------+------------+
-    |         1 | 07:21:29.2 |    -10.000 |      0.000 |
-    |         2 | 07:21:29.3 |     -8.571 |      0.000 |
-    |         3 | 07:21:29.4 |     -7.143 |      0.000 |
-    ^C
-    A 'deferred pause' has been requested. The RunEngine will pause at the next
-    checkpoint. To pause immediately, hit Ctrl+C again in the next 10 seconds.
+    |         1 | 12:40:37.6 |      1.000 |      0.607 |
+    |         2 | 12:40:38.7 |      2.000 |      0.135 |
+    |         3 | 12:40:39.7 |      3.000 |      0.011 |
+    ^CA 'deferred pause' has been requested. The RunEngine will pause at the next checkpoint. To pause immediately, hit Ctrl+C again in the next 10 seconds.
     Deferred pause acknowledged. Continuing to checkpoint.
-    |         4 | 07:21:29.5 |     -5.728 |      0.000 |
+    |         4 | 12:40:40.7 |      4.000 |      0.000 |
     Pausing...
-    In [2]:
+    ---------------------------------------------------------------------------
+    RunEngineInterrupted                      Traceback (most recent call last)
+    <ipython-input-12-826ee9dfb918> in <module>()
+    ----> 1 RE(scan([det], motor, 1, 10, 10))
+
+    ~/Documents/Repos/bluesky/bluesky/run_engine.py in __call__(self, *args, **metadata_kw)
+        670
+        671             if self._interrupted:
+    --> 672                 raise RunEngineInterrupted(self.pause_msg) from None
+        673
+        674         return tuple(self._run_start_uids)
+
+    RunEngineInterrupted:
+    Your RunEngine is entering a paused state. These are your options for changing
+    the state of the RunEngine:
+
+    RE.resume()    Resume the plan.
+    RE.abort()     Perform cleanup, then kill plan. Mark exit_stats='aborted'.
+    RE.stop()      Perform cleanup, then kill plan. Mark exit_status='success'.
+    RE.halt()      Emergency Stop: Do not perform cleanup --- just stop.
 
 What to do after pausing
 ------------------------
@@ -119,8 +164,8 @@ Stop
 
 ``RE.stop()`` is functionally identical to ``RE.abort()``. The only
 difference is that aborted runs are marked with ``exit_status: 'abort'``
-instead of ``exit_status: 'success'``. This distinction may be a useful
-distinction during analysis`.
+instead of ``exit_status: 'success'``. This may be a useful distinction
+during analysis.
 
 Halt
 ^^^^
@@ -161,11 +206,13 @@ RE.halt()      Do not perform cleanup --- just stop.
 RE.state       Check if 'paused' or 'idle'.
 ============== ===========
 
+.. _suspenders:
+
 Automated Suspension
 ====================
 
-It can also be useful to interrupt execution automatically in response some
-condition (e.g., shutter closed, beam dumped, temperature exceed some limit).
+It can also be useful to interrupt execution automatically in response to some
+condition (e.g., shutter closed, beam dumped, temperature exceeded some limit).
 We use the word *suspension* to mean an unplanned pause initialized by some
 agent running the background. The agent (a "suspender") monitors some condition
 and, if it detects a problem, it suspends execution. When it detects that
@@ -211,7 +258,7 @@ Example: Suspend a plan if the beam current dips low
 
 This defines a suspender and installs it on the RunEngine. With this, plans
 will be automatically suspended when the ``beam_current`` signal goes below 2
-and resume once it exceeds 3.
+and resumed once it exceeds 3.
 
 .. code-block:: python
 
@@ -219,7 +266,7 @@ and resume once it exceeds 3.
     from bluesky.suspenders import SuspendFloor
 
     beam_current = EpicsSignal('...PV string...')
-    sus = SuspendFloor(beam_current, 2, 3)
+    sus = SuspendFloor(beam_current, 2, resume_thresh=3)
     RE.install_suspender(sus)
 
 In the following example, the beam current dipped below 2 in the middle of
@@ -250,48 +297,60 @@ Built-in Suspenders
 -------------------
 
 .. autosummary::
-   :toctree:
+   :toctree: generated
    :nosignatures:
 
    bluesky.suspenders.SuspendBoolHigh
    bluesky.suspenders.SuspendBoolLow
    bluesky.suspenders.SuspendFloor
    bluesky.suspenders.SuspendCeil
-   bluesky.suspenders.SuspendInBand
-   bluesky.suspenders.SuspendOutBand
+   bluesky.suspenders.SuspendWhenOutsideBand
 
 .. _checkpoints:
 
 Checkpoints
 ===========
 
-Plan are specified as a sequence of :ref:`messages <msg>`, granular
+Plans are specified as a sequence of :ref:`messages <msg>`, granular
 instructions like 'read' and 'set'. The messages can optionally include one
-or more 'checkpoint' messages, indicating a place where it safe to resume after
-an interruption. For example, checkpoints are placed before each step of a
+or more 'checkpoint' messages, indicating a place where it is safe to resume
+after an interruption. For example, checkpoints are placed before each step of a
 :func:`bluesky.plans.scan`.
 
 Some experiments are not resumable: for example, the sample may be melting or
-aging. Incorporating :func:`bluesky.plans.clear_checkpoint` in a plan makes it
-un-resuming. If a pause or suspension are requested, the plan will abort
-instead.
+aging. Incorporating :func:`bluesky.plan_stubs.clear_checkpoint` in a plan
+makes it un-resuming. If a pause or suspension are requested, the plan will
+abort instead.
 
 .. note::
 
     Some details about checkpoints and when they are allowed:
 
-    It is not legal to create checkpoint in the middle of a data point (between
-    'create' and 'save') Checkpoints are implicitly created after actions that
-    it is not safe to replay: staging a device, adding a monitor, or adding a
-    subscription.
+    It is not legal to create a checkpoint in the middle of a data point
+    (between 'create' and 'save'). Checkpoints are implicitly created after
+    actions that it is not safe to replay: staging a device, adding a
+    monitor, or adding a subscription.
+
+.. _planned_pauses:
 
 Planned Pauses
 ==============
 
-It's possible to write a custom *plan* that pauses at certain points, requiring
-the user to manually resume or abort.
+Pausing is typically done :ref:`interactively <pausing_interactively>` (Ctrl+C)
+but it can also be incorporated into a plan. The plan can pause the RunEngine,
+requiring the user to type ``RE.resume()`` to continue or ``RE.stop()``
+(or similar) to clean up and stop.
 
-See the :ref:`planned_pauses` subsection of the documentation on *Plans*.
+.. code-block:: python
+
+    import bluesky.plan_stubs as bps
+
+    def pausing_plan():
+        while True:
+            yield from some_plan(...)
+            print("Type RE.resume() to go again or RE.stop() to stop.")
+            yield from bps.checkpoint()  # marking where to resume from
+            yield from bps.pause()
 
 Associated RunEngine Interface
 ==============================
@@ -307,13 +366,19 @@ The states are:
 
 * ``'idle'``: RunEngine is waiting for instructions.
 * ``'running'``: RunEngine is executing instructions.
-* ``'paused'``: RunEngine is waiting for user input. It can be 
+* ``'paused'``: RunEngine is waiting for user input.
 
 Suspender-related Methods
 -------------------------
 
 .. automethod:: bluesky.run_engine.RunEngine.install_suspender
+    :noindex:
+
 .. automethod:: bluesky.run_engine.RunEngine.remove_suspender
+    :noindex:
+
+.. automethod:: bluesky.run_engine.RunEngine.clear_suspenders
+    :noindex:
 
 The RunEngine also has a ``suspenders`` property, a collection of the
 currently-installed suspenders.
@@ -325,23 +390,25 @@ This method is called when Ctrl+C is pressed or when a 'pause' Message is
 processed. It can also be called by user-defined agents. See the next example.
 
 .. automethod:: bluesky.run_engine.RunEngine.request_pause
+    :noindex:
 
 This method is used by the ``PVSuspend*`` classes above. It can also be called
 by user-defined agents.
 
 .. automethod:: bluesky.run_engine.RunEngine.request_suspend
+    :noindex:
 
 
 Example: Requesting a pause from the asyncio event loop
 -------------------------------------------------------
 
-Since the user does not control of the prompt, calls to ``RE.request_pause``
-must be planned in advance. Here is a example that pauses the plan after 5
-seconds.
+Since the user does not have control of the prompt, calls to
+``RE.request_pause`` must be planned in advance. Here is a example that pauses
+the plan after 5 seconds.
 
 .. code-block:: python
 
-    from bluesky.plans import null
+    from bluesky.plan_stubs import null
 
     def loop_forever():
         "a silly plan"
@@ -400,8 +467,10 @@ To see this in action, try this example:
 
 .. code-block:: python
 
-    from bluesky.plans import pchain, count, pause
-    from bluesky.examples import det
+    from bluesky.plans import count
+    from bluesky.preprocessors import pchain
+    from bluesky.plan_stubs import pause
+    from ophyd.sim import det
 
     RE.record_interruptions = True
 

@@ -35,10 +35,12 @@ extensions = [
     'sphinx.ext.mathjax',
     'sphinx.ext.autodoc',
     'sphinx.ext.autosummary',
-    'sphinxcontrib.napoleon',
+    'sphinx.ext.viewcode',
     'IPython.sphinxext.ipython_directive',
     'IPython.sphinxext.ipython_console_highlighting',
     'matplotlib.sphinxext.plot_directive',
+    'sphinx.ext.intersphinx',
+    'numpydoc',
 ]
 
 # Configuration options for plot_directive. See:
@@ -47,7 +49,11 @@ plot_html_show_source_link = False
 plot_html_show_formats = False
 plot_pre_code = ("from matplotlib import pyplot as plt\n"
                  "from bluesky import RunEngine\n"
-                 "RE = RunEngine({})")
+                 "from bluesky.callbacks.best_effort import BestEffortCallback\n"
+                 "RE = RunEngine({})\n"
+                 "bec = BestEffortCallback()\n"
+                 "RE.subscribe(bec)\n"
+                 )
 
 # Generate the API documentation when building
 autosummary_generate = True
@@ -305,3 +311,11 @@ texinfo_documents = [
 
 # If true, do not generate a @detailmenu in the "Top" node's menu.
 #texinfo_no_detailmenu = False
+
+intersphinx_mapping = {
+    'python': ('https://docs.python.org/3/', None),
+    'numpy': ('https://docs.scipy.org/doc/numpy/', None),
+    'scipy': ('https://docs.scipy.org/doc/scipy/reference/', None),
+    'pandas': ('https://pandas.pydata.org/pandas-docs/stable', None),
+    'matplotlib': ('https://matplotlib.org', None)
+  }

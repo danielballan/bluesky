@@ -4,6 +4,7 @@ from abc import ABCMeta, abstractmethod, abstractproperty
 import operator
 from threading import Lock
 from functools import partial
+from warnings import warn
 
 
 class SuspenderBase(metaclass=ABCMeta):
@@ -20,10 +21,10 @@ class SuspenderBase(metaclass=ABCMeta):
         How long to wait in seconds after the resume condition is met
         before marking the event as done.  Defaults to 0
 
-    pre_plan : iterable or iterator, optional
+    pre_plan : iterable or iterator or generator function, optional
             a generator, list, or similar containing `Msg` objects
 
-    post_plan : iterable or iterator, optional
+    post_plan : iterable or iterator or generator function, optional
             a generator, list, or similar containing `Msg` objects
 
     tripped_message : str, optional
@@ -425,7 +426,7 @@ class _SuspendBandBase(SuspenderBase):
         self._top = band_top
 
 
-class SuspendInBand(_SuspendBandBase):
+class SuspendWhenOutsideBand(_SuspendBandBase):
     """
     Suspend when a scalar signal leaves a given band of values.
 
@@ -467,6 +468,13 @@ class SuspendInBand(_SuspendBandBase):
                          if s)
 
 
+class SuspendInBand(SuspendWhenOutsideBand):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        warn("SuspendInBand has been renamed SuspendWhenOutsideBand to make "
+             "its meaning more clear. Its behavior has not changed.")
+
+
 class SuspendOutBand(_SuspendBandBase):
     """
     Suspend when a scalar signal enters a given band of values.
@@ -494,6 +502,10 @@ class SuspendOutBand(_SuspendBandBase):
     post_plan : iterable or iterator, optional
             a generator, list, or similar containing `Msg` objects
     """
+    def __init__(self, *args, **kwargs):
+        warn("bluesky.suspenders.SuspendOutBand is deprecated.")
+        super().__init__(*args, **kwargs)
+
     def _should_resume(self, value):
         return not (self._bot < value < self._top)
 

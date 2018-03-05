@@ -14,7 +14,10 @@ data acquisition that is occurring at different rates.
     plans in the section on :doc:`plans`.
 
 In short, "flying" is for acquisition at high rates and "monitoring" is for
-acquisition an irregular or slow rate.
+acquisition at an irregular or slow rate. Monitoring does not guarantee that
+all readings will be captured; i.e. monitoring is lossy. It is susceptible to
+network glitches. But flying, by contract, is not lossy if correctly
+implementated.
 
 **Flying** means: "Let the hardware take control, cache data externally, and
 then transfer all the data to the RunEngine at the end." This is essential when
@@ -36,7 +39,8 @@ at a device's natural update rate. For example, we might monitor background
 condition (e.g., beam current) on the side while executing the primary logic of
 a plan. The documents are generated in real time --- not all at the end, like
 flying --- so if the update rate is too high, monitoring can slow down the
-execution of the plan.
+execution of the plan. As mentioned above, monitoring is also lossy: if network
+traffic is high, some readings may be missed.
 
 Flying
 ------
@@ -58,8 +62,9 @@ To "fly" one or more "flyable" devices during a plan, bluesky provides a
 
 .. code-block:: python
 
-    from bluesky.examples import det, flyer1, flyer2  # simulated hardware
-    from bluesky.plans import count, fly_during_wrapper
+    from ophyd.sim import det, flyer1, flyer2  # simulated hardware
+    from bluesky.plans import count
+    from bluesky.preprocessors fly_during_wrapper
 
     RE(fly_during_wrapper(count([det], num=5), [flyer1, flyer2]))
 
@@ -67,23 +72,25 @@ and as a decorator, :func:`fly_during_decorator`.
 
 .. code-block:: python
 
-    from bluesky.examples import det, flyer1, flyer2  # simulated hardware
-    from bluesky.plans import count, fly_during_decorator
+    from ophyd.sim import det, flyer1, flyer2  # simulated hardware
+    from bluesky.plans import count
+    from bluesky.preprocessors fly_during_wrapper
 
     # Define a new plan for future use.
     fly_and_count = fly_during_decorator([flyer1, flyer2])(count)
 
     RE(fly_and_count([det]))
 
-Alternatively, if you are using the `SPEC-like Plan API <spec_api>`, simply add
-flyers to the global state:
+Alternatively, if you are using :ref:`supplemental_data`, simply
+append to or extend its list of flyers to kick off during every run:
 
 .. code-block:: python
 
-    from bluesky.global_state import gs
-    from bluesky.examples import flyer1, flyer2
+    from ophyd.sim import flyer1, flyer2
 
-    gs.FLYERS = [flyer1, flyer2]
+    # Assume sd is an instance of the SupplementalData set up as
+    # descripted in the documentation linked above.
+    sd.flyers.extend([flyer1, flyer2])
 
 They will be included with all plans until removed.
 
@@ -96,8 +103,9 @@ is available as a wrapper, :func:`monitor_during_wrapper`
 
 .. code-block:: python
 
-    from bluesky.examples import det, det1
-    from bluesky.plans import count, monitor_during_wrapper
+    from ophyd.sim import det, det1
+    from bluesky.plans import count
+    from bluesky.preprocessors import monitor_during_wrapper
 
     # Record any updates from det1 while 'counting' det 5 times.
     RE(monitor_during_wrapper(count([det], num=5), [det1]))
@@ -106,22 +114,24 @@ and as a decorator, :func:`monitor_during_decorator`.
 
 .. code-block:: python
 
-    from bluesky.examples import det, det1
-    from bluesky.plans import count, monitor_during_decorator
+    from ophyd.sim import det, det1
+    from bluesky.plans import count
+    from bluesky.preprocessors import monitor_during_wrapper
 
     # Define a new plan for future use.
     monitor_and_count = monitor_during_decorator([det1])(count)
 
     RE(monitor_and_count([det]))
 
-Alternatively, if you are using the `SPEC-like Plan API <spec_api>`, simply add
-devices to be monitored to the global state:
+Alternatively, if you are using :ref:`supplemental_data`, simply
+append to or extend its list of signals to monitor:
 
 .. code-block:: python
 
-    from bluesky.global_state import gs
-    from bluesky.examples import det1
+    from ophyd.sim import det1
 
-    gs.MONITORS = [det1]
+    # Assume sd is an instance of the SupplementalData set up as
+    # descripted in the documentation linked above.
+    sd.monitors.append(det1)
 
 They will be included with all plans until removed.

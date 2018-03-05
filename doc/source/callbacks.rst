@@ -14,17 +14,26 @@ Overview of Callbacks
 ---------------------
 
 As the RunEngine executes a plan, it organizes metadata and data into
-*Documents,* Python dictionaries organized in a `specified but flexible
-<http://nsls-ii.github.io/architecture-overview.html>`__ way. 
-Each time a new Document is created, the RunEngine passes it to a list of
-functions. These functions can do anything: store the data to disk, print a
-line of text to the screen, add a point to a plot, or even transfer the data to
-a cluster for immediate processing. These functions are called "callbacks."
+*Documents,* Python dictionaries organized in a
+:doc:`specified but flexible <documents>` way. Each time a new Document is
+created, the RunEngine passes it to a list of functions. These functions can do
+anything: store the data to disk, print a line of text to the screen, add a
+point to a plot, or even transfer the data to a cluster for immediate
+processing. These functions are called "callbacks."
 
 We "subscribe" callbacks to the live stream of Documents coming from the
 RunEngine. You can think of a callback as a self-addressed stamped envelope: it
 tells the RunEngine, "When you create a Document, send it to this function for
 processing."
+
+Callback functions are run in a blocking fashion: data acquisition cannot
+continue until they return. For light tasks like simple plotting or critical
+tasks like sending the data to a long-term storage medium, this behavior is
+desirable. It is easy to debug and it guarantees that critical errors will be
+noticed immediately. But heavy computational tasks --- anything that takes more
+than about 0.2 seconds to finish --- should be executed in a separate process
+or server so that they do not hold up data acquisition. Bluesky provides nice
+tooling for this use case --- see :ref:`zmq_callback`.
 
 Simplest Working Example
 ------------------------
@@ -35,7 +44,7 @@ each Document as it is generated during data collection.
 .. code-block:: python
 
     from bluesky.plans import count
-    from bluesky.examples import det
+    from ophyd.sim import det
 
     RE(count([det]), print)
 
@@ -59,7 +68,7 @@ A working example:
 
 .. code-block:: python
 
-    from bluesky.examples import det, motor
+    from ophyd.sim import det, motor
     from bluesky.plans import scan
     from bluesky.callbacks import LiveTable
     dets = [det]
@@ -77,17 +86,15 @@ invoked this way. For some callback function ``cb``, the usage is:
 
 .. code-block:: python
 
-    RE.subscribe('all', cb)
+    RE.subscribe(cb)
 
 This step is usually performed in a startup file (i.e., IPython profile).
 
-The method ``RunEngine.subscribe`` is an alias for this method:
+.. automethod:: bluesky.run_engine.RunEngine.subscribe
+    :noindex:
 
-.. automethod:: bluesky.run_engine.Dispatcher.subscribe
-
-The method ``RunEngine.unsubscribe`` is an alias for this method:
-
-.. automethod:: bluesky.run_engine.Dispatcher.unsubscribe
+.. automethod:: bluesky.run_engine.RunEngine.unsubscribe
+    :noindex:
 
 .. _subs_decorator:
 
@@ -102,7 +109,7 @@ In this example, we define a new plan, ``plan2``, that adds some callback
 
 .. code-block:: python
 
-    from bluesky.plans import subs_decorator
+    from bluesky.preprocessors import subs_decorator
 
     @subs_decorator(cb)
     def plan2():
@@ -118,7 +125,8 @@ For example, to define a variant of ``scan`` that includes a table by default:
 
 .. code-block:: python
 
-    from bluesky.plans import scan, subs_decorator
+    from bluesky.plans import scan
+    from bluesky.preprocessors import subs_decorator
 
     def my_scan(detectors, motor, start, stop, num, *, per_step=None, md=None):
         "This plan takes the same arguments as `scan`."
@@ -146,7 +154,7 @@ row is added to the table. Demo:
 .. ipython:: python
 
     from bluesky.plans import scan
-    from bluesky.examples import motor, det
+    from ophyd.sim import motor, det
     from bluesky.callbacks import LiveTable
 
     RE(scan([det], motor, 1, 5, 5), LiveTable([motor, det]))
@@ -205,7 +213,7 @@ this command once. In an IPython terminal, the command is:
 .. code-block:: python
 
     %matplotlib qt
-    from bluesky.utils import install_qt_kickcer
+    from bluesky.utils import install_qt_kicker
     install_qt_kicker()
 
 If you are using a Jupyter notebook, the command is:
@@ -213,7 +221,7 @@ If you are using a Jupyter notebook, the command is:
 .. code-block:: python
 
     %matplotlib notebook
-    from bluesky.utils import install_nb_kickcer
+    from bluesky.utils import install_nb_kicker
     install_nb_kicker()
 
 Why? The RunEngine and matplotlib (technically, matplotlib's Qt backend) both
@@ -226,6 +234,10 @@ bluesky in particular. See
 `the relevant section of the IPython documentation <https://ipython.readthedocs.io/en/stable/interactive/magics.html?highlight=matplotlib#magic-matplotlib>`_
 for details.
 
+.. autofunction:: bluesky.utils.install_kicker
+.. autofunction:: bluesky.utils.install_qt_kicker
+.. autofunction:: bluesky.utils.install_nb_kicker
+
 .. _liveplot:
 
 LivePlot (for scalar data)
@@ -236,7 +248,7 @@ Plot scalars. Example:
 .. code-block:: python
 
     from bluesky.plans import scan
-    from bluesky.examples import det, motor
+    from ophyd.sim import det, motor
     from bluesky.callbacks import LivePlot
 
     RE(scan([det], motor, -5, 5, 30), LivePlot('det', 'motor'))
@@ -245,7 +257,7 @@ Plot scalars. Example:
 
     from bluesky import RunEngine
     from bluesky.plans import scan
-    from bluesky.examples import det, motor
+    from ophyd.sim import det, motor
     from bluesky.callbacks import LivePlot
     RE = RunEngine({})
     RE(scan([det], motor, -5, 5, 30), LivePlot('det', 'motor'))
@@ -263,7 +275,7 @@ To customize style, pass in any
 
     from bluesky import RunEngine
     from bluesky.plans import scan
-    from bluesky.examples import det, motor
+    from ophyd.sim import det, motor
     from bluesky.callbacks import LivePlot
     RE = RunEngine({})
     RE(scan([det], motor, -5, 5, 30),
@@ -278,69 +290,69 @@ Live Image
 
 .. _liveraster:
 
-LiveRaster (gridded heat map)
-+++++++++++++++++++++++++++++
+LiveGrid (gridded heat map)
++++++++++++++++++++++++++++
 
 Plot a scalar value as a function of two variables on a regular grid. Example:
 
 .. code-block:: python
 
-    from bluesky.plans import outer_product_scan
-    from bluesky.examples import det4, motor1, motor2
-    from bluesky.callbacks import LiveRaster
+    from bluesky.plans import grid_scan
+    from ophyd.sim import det4, motor1, motor2
+    from bluesky.callbacks import LiveGrid
 
-    RE(outer_product_scan([det4], motor1, -3, 3, 6, motor2, -5, 5, 10, False),
-       LiveRaster((6, 10), 'det4'))
+    RE(grid_scan([det4], motor1, -3, 3, 6, motor2, -5, 5, 10, False),
+       LiveGrid((6, 10), 'det4'))
 
 .. plot::
 
     from bluesky import RunEngine
-    from bluesky.plans import outer_product_scan
-    from bluesky.examples import det4, motor1, motor2
-    from bluesky.callbacks import LiveRaster
-    motor1._fake_sleep = 0
-    motor2._fake_sleep = 0
+    from bluesky.plans import grid_scan
+    from ophyd.sim import det4, motor1, motor2
+    from bluesky.callbacks import LiveGrid
+    motor1.delay = 0
+    motor2.delay = 0
     RE = RunEngine({})
-    RE(outer_product_scan([det4], motor1, -3, 3, 6, motor2, -5, 5, 10, False),
-       LiveRaster((6, 10), 'det4'))
+    RE(grid_scan([det4], motor1, -3, 3, 6, motor2, -5, 5, 10, False),
+       LiveGrid((6, 10), 'det4'))
 
-.. autoclass:: bluesky.callbacks.LiveRaster
+.. autoclass:: bluesky.callbacks.LiveGrid
 
-LiveMesh (scattered heat map)
-+++++++++++++++++++++++++++++
+LiveScatter (scattered heat map)
+++++++++++++++++++++++++++++++++
 
 Plot a scalar value as a function of two variables. Unlike
-:class:`bluesky.callbacks.LiveRaster`, this does not assume a regular grid.
+:class:`bluesky.callbacks.LiveGrid`, this does not assume a regular grid.
 Example:
 
 .. code-block:: python
 
-    from bluesky.plans import outer_product_scan
-    from bluesky.examples import det5, jittery_motor1, jittery_motor2
-    from bluesky.callbacks import LiveMesh
+    from bluesky.plans import grid_scan
+    from ophyd.sim import det5, jittery_motor1, jittery_motor2
+    from bluesky.callbacks import LiveScatter
 
     # The 'jittery' example motors won't go exactly where they are told to go.
 
-    RE(outer_product_scan([det5],
+    RE(grid_scan([det5],
                           jittery_motor1, -3, 3, 6,
                           jittery_motor2, -5, 5, 10, False),
-       LiveMesh('jittery_motor1', 'jittery_motor2', 'det5',
+       LiveScatter('jittery_motor1', 'jittery_motor2', 'det5',
                 xlim=(-3, 3), ylim=(-5, 5)))
 
 .. plot::
 
     from bluesky import RunEngine
-    from bluesky.plans import outer_product_scan
-    from bluesky.examples import det5, jittery_motor1, jittery_motor2
-    from bluesky.callbacks import LiveMesh
+    from bluesky.plans import grid_scan
+    from ophyd.sim import det5, jittery_motor1, jittery_motor2
+    from bluesky.callbacks import LiveScatter
     RE = RunEngine({})
-    RE(outer_product_scan([det5],
+    RE(grid_scan([det5],
                           jittery_motor1, -3, 3, 6,
                           jittery_motor2, -5, 5, 10, False),
-       LiveMesh('jittery_motor1', 'jittery_motor2', 'det5',
+       LiveScatter('jittery_motor1', 'jittery_motor2', 'det5',
                 xlim=(-3, 3), ylim=(-5, 5)))
 
-.. autoclass:: bluesky.callbacks.LiveMesh
+.. autoclass:: bluesky.callbacks.LiveScatter
 
 LiveFit
 +++++++
@@ -382,7 +394,7 @@ To integrate with the bluesky we need to provide:
 .. code-block:: python
 
     from bluesky.plans import scan
-    from bluesky.examples import motor, noisy_det
+    from ophyd.sim import motor, noisy_det
     from bluesky.callbacks import LiveFit
 
     lf = LiveFit(model, 'noisy_det', {'x': 'motor'}, init_guess)
@@ -407,7 +419,7 @@ This example uses a model with two independent variables, x and y.
 
 .. code-block:: python
 
-    from bluesky.examples import motor1, motor2, det4
+    from ophyd.sim import motor1, motor2, det4
 
     def gaussian(x, y, A, sigma, x0, y0):
         return A*np.exp(-((x - x0)**2 + (y - y0)**2)/(2 * sigma**2))
@@ -423,7 +435,7 @@ This example uses a model with two independent variables, x and y.
     lf = LiveFit(model, 'det4', {'x': 'motor1', 'y': 'motor2'}, init_guess)
 
     # Scan a 2D mesh.
-    RE(outer_product_scan([det4], motor1, -1, 1, 20, motor2, -1, 1, 20, False),
+    RE(grid_scan([det4], motor1, -1, 1, 20, motor2, -1, 1, 20, False),
        lf)
 
 By default, the fit is recomputed every time a new data point is available. See
@@ -448,7 +460,7 @@ Repeating the example from ``LiveFit`` above, adding a plot:
     import numpy as np
     import lmfit
     from bluesky.plans import scan
-    from bluesky.examples import motor, noisy_det
+    from ophyd.sim import motor, noisy_det
     from bluesky.callbacks import LiveFit
 
     def gaussian(x, A, sigma, x0):
@@ -476,7 +488,7 @@ Repeating the example from ``LiveFit`` above, adding a plot:
     import numpy as np
     import lmfit
     from bluesky.plans import scan
-    from bluesky.examples import motor, noisy_det
+    from ophyd.sim import motor, noisy_det
     from bluesky.callbacks import LiveFit, LiveFitPlot
     from bluesky import RunEngine
 
@@ -513,7 +525,7 @@ Notice that they can styled independently.
     import numpy as np
     import lmfit
     from bluesky.plans import scan
-    from bluesky.examples import motor, noisy_det
+    from ophyd.sim import motor, noisy_det
     from bluesky.callbacks import LiveFit, LivePlot, LiveFitPlot
     from bluesky import RunEngine
 
@@ -538,15 +550,15 @@ Notice that they can styled independently.
 
 .. autoclass:: bluesky.callbacks.LiveFitPlot
 
-PeakStats 
+PeakStats
 ++++++++++
 
 Compute statistics of peak-like data. Example:
 
 .. code-block:: python
 
-    from bluesky.callbacks.scientific import PeakStats
-    from bluesky.examples import motor, det
+    from bluesky.callbacks.fitting import PeakStats
+    from ophyd.sim import motor, det
     from bluesky.plans import scan
 
     ps = PeakStats('motor', 'det')
@@ -557,15 +569,16 @@ There is also a convenience function for plotting:
 
 .. code-block:: python
 
-    from bluesky.callbacks.scientific import plot_peak_stats
+    from bluesky.callbacks.mpl_plotting import plot_peak_stats
 
     plot_peak_stats(ps)
 
 .. plot::
 
     from bluesky import RunEngine
-    from bluesky.callbacks.scientific import PeakStats, plot_peak_stats
-    from bluesky.examples import motor, det
+    from bluesky.callbacks.fitting import PeakStats
+    from bluesky.callbacks.mpl_plotting import plot_peak_stats
+    from ophyd.sim import motor, det
     from bluesky.plans import scan
 
     RE = RunEngine({})
@@ -573,8 +586,162 @@ There is also a convenience function for plotting:
     RE(scan([det], motor, -5, 5, 10), ps)
     plot_peak_stats(ps)
 
-.. autoclass:: bluesky.callbacks.scientific.PeakStats
-.. autofunction:: bluesky.callbacks.scientific.plot_peak_stats
+.. autoclass:: bluesky.callbacks.fitting.PeakStats
+.. autofunction:: bluesky.callbacks.mpl_plotting.plot_peak_stats
+
+.. _best_effort_callback:
+
+Best-Effort Callback
+--------------------
+
+.. warning::
+
+    This is a new, experimental feature. It will likely be changed in future
+    releases in a way that is not backward-compatible.
+
+This is meant to be permanently subscribed to the RunEngine like so:
+
+.. code-block:: python
+
+    # one-time configuration
+    from bluesky.callbacks.best_effort import BestEffortCallback
+    bec = BestEffortCallback()
+    RE.subscribe(bec)
+
+It provides best-effort plots and visualization for *any* plan. It uses the
+'hints' key provided by the plan, if present. (See the source code of the
+plans in :mod:`bluesky.plans` for examples.)
+
+.. ipython:: python
+    :suppress:
+
+    from bluesky.callbacks.best_effort import BestEffortCallback
+    bec = BestEffortCallback()
+    RE.subscribe(bec)
+
+.. ipython:: python
+
+    from ophyd.sim import det1, det2
+    from bluesky.plans import scan
+
+    dets = [det1, det2]
+
+    RE(scan(dets, motor, 1, 5, 5))  # automatically prints table, shows plot
+
+.. plot::
+
+    from bluesky import RunEngine
+    from bluesky.plans import scan
+    from ophyd.sim import det, motor
+    from bluesky.callbacks.best_effort import BestEffortCallback
+    RE = RunEngine({})
+    bec = BestEffortCallback()
+    RE.subscribe(bec)
+    RE(scan([det], motor, 1, 5, 5))
+
+Use these methods to toggle on or off parts of the functionality.
+
+.. currentmodule:: bluesky.callbacks.best_effort
+
+.. autosummary::
+    :toctree: generated
+
+    BestEffortCallback.enable_heading
+    BestEffortCallback.disable_heading
+    BestEffortCallback.enable_table
+    BestEffortCallback.disable_table
+    BestEffortCallback.enable_baseline
+    BestEffortCallback.disable_baseline
+    BestEffortCallback.enable_plots
+    BestEffortCallback.disable_plots
+
+Blacklist plotting certain streams using the ``bec.noplot_streams`` attribute,
+which is a list of stream names.  The blacklist is set to ``['baseline']`` by
+default.
+
+The attribute ``bec.overplot`` can be used to control whether line plots for
+subsequent runs are plotted on the same axes. It is ``True`` by default.
+Overplotting only occurs if the names of the axes are the same from one plot
+to the next.
+
+Peak Stats
+++++++++++
+
+For each plot, simple peak-fitting is performed in the background. Of
+course, it may or may not be applicable depending on your data, and it is
+not shown by default. To view fitting annotations in a plot, click the
+plot area and press Shift+P. (Lowercase p is a shortcut for
+"panning" the plot.)
+
+To access the peak-fit statistics programmatically, use ``bec.peaks``.
+
+.. _hints:
+
+Hints
++++++
+
+The best-effort callback aims to print and plot useful information without
+being overwhelmingly comprehensive. Its usefulness is improved and tuned by the
+``hints`` attribute on devices (if available) and ``hints`` metadata injected
+by plans (if available). If either or both of these are not available, the
+best-effort callback still makes a best effort to display something useful.
+
+The contents of hints *do not at all affect what data is saved*. The content
+only affect what is displayed automatically by the best-effort callback and
+other tools that opt to look at the hints. Additional callbacks may still be
+set up for live or *post-facto* visualization or processing that do more
+specific things without relying on hints.
+
+The ``hints`` attribute or property on devices is a dictionary with the key
+``'fields'`` mapped to a list of fields.
+
+On movable devices such as motors or temperature controllers, these fields are
+expected to comprise the independent axes of the device. A motor that reads
+the fields ``['x', 'x_setpoint']`` might provide the hint ``{'fields': ['x']}``
+to indicate that it has one independent axis and that the field ``x`` is the best
+representation of its value.
+
+A readable device might report many fields like
+``['chan1', 'chan2', 'chan3', 'chan4', 'chan5']`` but perhaps only a couple are
+usually interesting. A useful hint might narrow them down to
+``{'fields': ['chan1', 'chan2']}`` so that a "best-effort" plot does not
+display an overwhelming amount of information.
+
+The hints provided by the devices are read by the RunEngine and collated in the
+:doc:`Event Descriptor documents <event_descriptors>`.
+
+The plans generally know which devices are being used as dependent and
+independent variables (i.e., which are being "scanned" over), and they may
+provide this information via a ``'hints'`` metadata key that they inject into
+the start document along with the rest of their metadata. Examples:
+
+.. code-block:: python
+
+    # The pattern is
+    # {'dimensions': [(fields, stream_name), (fields, stream_name), ...]}
+
+    # a scan over time
+    {'dimensions': [(('time',), 'primary')]}
+
+    # a one-dimensional scan
+    {'dimensions': [(motor.hints['fields'], 'primary')]}
+
+    # a two-dimensional scan
+    {'dimensions': [(x_motor.hints['fields'], 'primary'),
+                    (y_motor.hints['fields'], 'primary')]}
+
+    # an N-dimensional scan
+    {'dimensions': [(motor.hints['fields'], 'primary') for motor in motors]}
+
+It's possible to adjust hints interactively, but they are generally intended to
+be set in a startup file. Err on the side of displaying more information than
+you need to see, and you will rarely need to adjust them.
+
+Plans may also hint that their data is sampled on a regular rectangular grid
+via the hint ``{'gridding': 'rectilinear'}``. This is useful, for example, for
+decided whether to visualize 2D data with LiveGrid or with LiveScatter.
+
+.. _export:
 
 Callback for Export
 -------------------
@@ -625,7 +792,7 @@ exporter in ``post_run`` and subscribe.
 
     from bluesky.callbacks.broker import post_run
 
-    RE.subscribe('all', post_run(exporter))
+    RE.subscribe(post_run(exporter))
 
 It also possible to write TIFFs live, hence the name ``LiveTiffExporter``, but
 there is an important disadvantage to doing this subscription in the same
@@ -635,7 +802,7 @@ experiment may not be acceptable.
 
 .. code-block:: python
 
-    RE.subscribe('all', exporter)
+    RE.subscribe(exporter)
 
 There are more configuration options available, as given in detail below. It is
 recommended to use these expensive callbacks in a separate process.
@@ -665,7 +832,7 @@ Working example:
         filename = '{}.h5'.format(run_start_uid)
         suitcase.export(header, filename)
 
-    RE.subscribe('stop', suitcase_as_callback)
+    RE.subscribe(suitcase_as_callback, 'stop')
 
 Export Metadata to the Olog
 +++++++++++++++++++++++++++
@@ -690,14 +857,14 @@ so there is some boilerplate:
     configured_logbook_func = partial(generic_logbook_func, logbooks=LOGBOOKS)
 
     cb = logbook_cb_factory(configured_logbook_func)
-    RE.subscribe('start', cb)
+    RE.subscribe(cb, 'start')
 
 The module ``bluesky.callbacks.olog`` includes some templates that format the
 data from the 'start' document into a readable log entry. You can also write
 customize templates and pass them to ``logbook_cb_factory``.
 
 You may specify a custom template. Here is a very simple example; see the
-`source code < https://github.com/NSLS-II/bluesky/blob/master/bluesky/callbacks/olog.py>`_
+`source code <https://github.com/NSLS-II/bluesky/blob/master/bluesky/callbacks/olog.py>`_
 for a more complex example (the default template).
 
 .. code-block:: python
@@ -734,7 +901,7 @@ determine which template to use.
 
     templates = {'count': COUNT_TEMPLATE,
                  'scan': SCAN_TEMPLATE,
-                 'relative_scan': SCAN_TEMPLATE}
+                 'rel_scan': SCAN_TEMPLATE}
 
     # Do same boilerplate above to set up configured_logbook_func. Then:
     cb = logbook_cb_factory(configured_logbook_func,
@@ -757,7 +924,7 @@ false alarm.
 
     from bluesky.callbacks.broker import post_run, verify_files_saved
 
-    RE.subscribe('all', post_run(verify_files_saved))
+    RE.subscribe(post_run(verify_files_saved))
 
 .. _debugging_callbacks:
 
@@ -836,7 +1003,7 @@ We are setting up a *subscription*.
 
 .. ipython:: python
 
-    from bluesky.examples import det
+    from ophyd.sim import det
     from bluesky.plans import count
 
     RE(count([det]), {'event': print_data})
@@ -900,6 +1067,8 @@ The base class, ``CallbackBase``, takes care of dispatching each Document to
 the corresponding method. If your application does not need all four, you may
 simple omit methods that aren't required.
 
+.. _zmq_callback:
+
 Subscriptions in Separate Processes or Host with 0MQ
 ----------------------------------------------------
 
@@ -909,119 +1078,167 @@ a separate process.
 
 In the main process, where the RunEngine is executing the plan, a ``Publisher``
 is created. It subscribes to the RunEngine. It serializes the documents it
-receives and it sends them over a socket to a 0MQ "forwarder device," which
-rebroadcasts the documents to any number of other processes or machines on the
-network.
+receives and it sends them over a socket to a 0MQ proxy which rebroadcasts the
+documents to any number of other processes or machines on the network.
 
 These other processes or machines set up a ``RemoteDispatcher`` which connects
-to the "forwarder device," receives the documents, and then runs callbacks just
-as they would be run if they were in the local ``RunEngine`` process.
+to the proxy receives the documents, and then runs callbacks just as they would
+be run if they were in the local ``RunEngine`` process.
 
 Multiple Publishers (each with its own RunEngine) can send documents to the
-same forwarder device. RemoteDispatchers can filter the document stream based
-on host, process ID, and/or ``id(RunEngine)``.
+same proxy. RemoteDispatchers can filter the document stream based on host,
+process ID, and/or ``id(RE)`` with ``RE`` is a particular instance of
+``RunEngine``.
 
 Minimal Example
 +++++++++++++++
 
-Look for a forwarder device configuration file at
-``/etc/zmq_forwarder_device.yml`` or
-``~/.config/zmq_forwarder_device/connection.yml``. If there isn't one, create
-one:
-
-.. code-block:: yaml
-
-    #~/.config/zmq_forwarder_device.yml
-    {'frontend_port': 5577
-    'backend_port': 5578
-    'host': 'localhost'}  # optional
-
-In production (e.g., at NSLS-II beamlines) the forwarder device should be
-running in the background as a service. Here is how to start one just for play:
+Start a 0MQ proxy using the CLI packaged with bluesky. It requires two ports as
+arguments.
 
 .. code-block:: bash
 
-    # uses config in /etc/zmq_forwarder_device.yml
-    #  or ~/.config/zmq_forwarder_device/connection.yml
-    $ python bluesky/examples/forwarder_device.py
+    bluesky-0MQ-proxy 5577 5578
 
-Start a callback that will receive documents from the forwarder and, in this
+Alternatively, you can start the proxy using a Python API:
+
+.. code-block:: python
+
+    from bluesky.callbacks.zmq import Proxy
+    proxy = Proxy(5577, 5578)
+    proxy.start()
+
+Start a callback that will receive documents from the proxy and, in this
 simple example, just print them.
 
 .. code-block:: python
 
-    from bluesky.callbacks.zmqsub import RemoteDispatcher
-    d = RemoteDispatcher('localhost', 5578)
-    d.subscribe('all', print)
+    from bluesky.callbacks.zmq import RemoteDispatcher
+    d = RemoteDispatcher('localhost:5578')
+    d.subscribe(print)
+
+    # when done subscribing things and ready to use:
     d.start()  # runs event loop forever
 
-On the machine/process where you want to actually collect data,
-hook up a subscription to publish documents to the forwarder. Finally,
-generate some documents with a simple plan.
+As `described above <kickers>`_, if you want to use any live-updating plots,
+you will need to install a "kicker". It needs to be installed on the same
+event loop used by the RemoteDispatcher, like so, and it must be done before
+calling ``d.start()``.
 
 .. code-block:: python
-
-    # Assume you have already create a RunEngine, RE.
-
-    from bluesky.callbacks.zmqpub import Publisher
-    Publisher(RE, 'localhost', 5577)
-    RE([Msg('open_run'), Msg('close_run')])
-
-As a result, the callback prints:
-
-.. code-block:: python
-
-    start
-    stop
-
-The connection between the publisher and the subscriber is lossless. (Messages
-are cached on the publisher side if the subscriber is slow.)
-
-Example: Plotting in separate process
-+++++++++++++++++++++++++++++++++++++
-
-As in the minimal example above, start a forwarder device. Then:
-
-On the plotting machine:
-
-.. code-block:: python
-
-    import matplotlib
-    matplotlib.use('Qt4Agg')
-
-    import matplotlib.pyplot as plt
-    plt.ion()
 
     from bluesky.utils import install_qt_kicker
-    from bluesky.callbacks import LivePlot
-    from bluesky.callbacks.zmqsub import RemoteDispatcher
+    install_qt_kicker(loop=d.loop)
 
-    d = RemoteDispatcher('localhost', 5578)
-    install_qt_kicker(d.loop)
-    d.subscribe('all', LivePlot('det', 'motor'))
-    d.start()
+In a Jupyter notebook, replace ``install_qt_kicker`` with
+``install_nb_kicker``.
 
-On the data collection machine, if there is not already a ``Publisher``
-running, add one.
+On the machine/process where you want to collect data, hook up a subscription
+to publish documents to the proxy.
 
 .. code-block:: python
 
-    # Assume you have already create a RunEngine, RE.
+    # Create a RunEngine instance (or, of course, use your existing one).
+    from bluesky import RunEngine, Msg
+    RE = RunEngine({})
 
-    from bluesky.callbacks.zmqpub import Publisher
-    p = Publisher(RE, 'localhost', 5577)
+    from bluesky.callbacks.zmq import Publisher
+    Publisher('localhost:5577', RE)
 
-And now run a demo scan with a simulated motor and detector.
-
-.. code-block:: python
-
-    from bluesky.plans import scan
-    from bluesky.examples import motor, det
-    motor._fake_sleep = 0.5  # makes motor "move" slowly so we can watch it
-    RE(scan([det], motor, 1, 10, 100))
+Finally, execute a plan with the RunEngine. As a result, the callback in the
+RemoteDispatcher should print the documents generated by this plan.
 
 Publisher / RemoteDispatcher API
 ++++++++++++++++++++++++++++++++
 
-.. autoclass:: bluesky.callbacks.zmqpub.Publisher
-.. autoclass:: bluesky.callbacks.zmqsub.RemoteDispatcher
+.. autoclass:: bluesky.callbacks.zmq.Proxy
+.. autoclass:: bluesky.callbacks.zmq.Publisher
+.. autoclass:: bluesky.callbacks.zmq.RemoteDispatcher
+
+
+Secondary Event Stream
+----------------------
+For certain applications, it may desirable to interpret event documents as
+they are created instead of waiting for them to reach offline storage. In order
+to keep this information completely quarantined from the raw data, the
+:class:`.LiveDispatcher` presents a completely unique stream that can be
+subscribed to using the same syntax as the RunEngine.
+
+In the majority of applications of :class:`.LiveDispatcher`, it is expected
+that subclasses are created to implement online analysis. This secondary event
+stream can be displayed and saved offline using the same callbacks that you
+would use to display the raw data.
+
+Below is an example using the `streamz
+<https://streamz.readthedocs.io/en/latest>`_ library to average a number of
+events together. The callback can be configured by looking at the start
+document metadata, or at initialization time. Events are then received and
+stored by the ``streamz`` network and a new averaged event is emitted when the
+correct number of events are in the cache. The important thing to note here is
+that the analysis only handles creating new ``data`` keys, but the descriptors,
+sequence numbering and event ids are all handled by the base `LiveDispatcher`
+class.
+
+.. code-block:: python
+
+    class AverageStream(LiveDispatcher):
+        """Stream that averages data points together"""
+        def __init__(self, n=None):
+            self.n = n
+            self.in_node = None
+            self.out_node = None
+            self.averager = None
+            super().__init__()
+
+        def start(self, doc):
+            """
+            Create the stream after seeing the start document
+
+            The callback looks for the 'average' key in the start document to
+            configure itself.
+            """
+            # Grab the average key
+            self.n = doc.get('average', self.n)
+            # Define our nodes
+            if not self.in_node:
+                self.in_node = streamz.Source(stream_name='Input')
+
+            self.averager = self.in_node.partition(self.n)
+
+            def average_events(cache):
+                average_evt = dict()
+                desc_id = cache[0]['descriptor']
+                # Check that all of our events came from the same configuration
+                if not all([desc_id == evt['descriptor'] for evt in cache]):
+                    raise Exception('The events in this bundle are from '
+                                    'different configurations!')
+                # Use the last descriptor to avoid strings and objects
+                data_keys = self.raw_descriptors[desc_id]['data_keys']
+                for key, info in data_keys.items():
+                    # Information from non-number fields is dropped
+                    if info['dtype'] in ('number', 'array'):
+                        # Average together
+                        average_evt[key] = np.mean([evt['data'][key]
+                                                    for evt in cache], axis=0)
+                return {'data': average_evt, 'descriptor': desc_id}
+
+            self.out_node = self.averager.map(average_events)
+            self.out_node.sink(self.process_event)
+            super().start(doc)
+
+        def event(self, doc):
+            """Send an Event through the stream"""
+            self.in_node.emit(doc)
+
+        def stop(self, doc):
+            """Delete the stream when run stops"""
+            self.in_node = None
+            self.out_node = None
+            self.averager = None
+            super().stop(doc)
+
+
+LiveDispatcher API
+++++++++++++++++++
+.. autoclass:: bluesky.callbacks.stream.LiveDispatcher
+   :members:

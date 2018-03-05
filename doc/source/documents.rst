@@ -33,7 +33,7 @@ of the :ref:`built-in pre-assembled plans <preassembled_plans>`, like
     plan might generate many runs or one long run. It just depends on how you
     want to organize your data, both at collection time and analysis time.
 
-    The section :ref:`reimplementing_count` explores this.
+    The tutorial's :ref:`tutorial_capture_data` section explores this.
 
 The documents in each run are:
 
@@ -85,14 +85,14 @@ by the user and the plan. (More on this in the :doc:`next section <metadata>`.)
 
 All built-in plans provide some useful metadata like the names of the
 detector(s) and motor(s) used. (User-definied plans may also do this; see
-:ref:`this section <customizing_metadata>`.)
+:ref:`this section <tutorial_plan_metadata>` of the tutorial.)
 
 The command:
 
 .. code-block:: python
 
     from bluesky.plans import scan
-    from bluesky.examples import det, motor  # simulated detector, motor
+    from ophyd.sim import det, motor  # simulated detector, motor
 
     # Scan 'motor' from -3 to 3 in 10 steps, taking readings from 'det'.
     RE(scan([det], motor, -3, 3, 16), purpose='calibration',
@@ -165,7 +165,8 @@ The most commonly useful fields here are 'time' and 'exit_status'.
      'reason': '',  # The RunEngine can provide reason for failure here.
      'time': 1442521012.1021606,
      'uid': '<randomly-generated unique ID>',
-     'start': '<reference to the start document>'
+     'start': '<reference to the start document>',
+     'num_events': {'primary': 16}
     }
 
 Event Descriptor

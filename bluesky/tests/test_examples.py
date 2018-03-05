@@ -1,15 +1,13 @@
 import pytest
-from bluesky.examples import (motor, simple_scan, det, sleepy, wait_one,
-                              wait_multiple, motor1, motor2, conditional_pause,
+from bluesky.examples import (simple_scan, sleepy, wait_one,
+                              wait_multiple, conditional_pause,
                               checkpoint_forever, simple_scan_saving,
-                              stepscan, MockFlyer, fly_gen,
-                              conditional_break, SynGauss, flyer1,
-                              ReaderWithFileStore, ReaderWithFSHandler
+                              stepscan, fly_gen, conditional_break,
                               )
 from bluesky.callbacks import LivePlot
 from bluesky import (Msg, IllegalMessageSequence,
                      RunEngineInterrupted, FailedStatus)
-import bluesky.plans as bp
+import bluesky.plan_stubs as bps
 import os
 import signal
 import asyncio
@@ -18,16 +16,16 @@ import numpy as np
 from numpy.testing import assert_array_equal
 
 
-def test_msgs(fresh_RE):
-    m = Msg('set', motor, {'motor': 5})
+def test_msgs(RE, hw):
+    m = Msg('set', hw.motor, {'motor': 5})
     assert m.command == 'set'
-    assert m.obj is motor
+    assert m.obj is hw.motor
     assert m.args == ({'motor': 5},)
     assert m.kwargs == {}
 
-    m = Msg('read', motor)
+    m = Msg('read', hw.motor)
     assert m.command == 'read'
-    assert m.obj is motor
+    assert m.obj is hw.motor
     assert m.args == tuple()
     assert m.kwargs == {}
 
@@ -50,131 +48,131 @@ def run(RE, gen, *args, **kwargs):
     assert RE.state == 'idle'
 
 
-def test_simple(fresh_RE):
-    run(fresh_RE, simple_scan, motor)
+def test_simple(RE, hw):
+    run(RE, simple_scan, hw.motor)
 
 
-def test_conditional_break(fresh_RE):
-    run(fresh_RE, conditional_break, det, motor, 0.2)
+def test_conditional_break(RE, hw):
+    run(RE, conditional_break, hw.det, hw.motor, 0.2)
 
 
-def test_sleepy(fresh_RE):
-    run(fresh_RE, sleepy, det, motor)
+def test_sleepy(RE, hw):
+    run(RE, sleepy, hw.det, hw.motor)
 
 
-def test_wait_one(fresh_RE):
-    run(fresh_RE, wait_one, det, motor)
+def test_wait_one(RE, hw):
+    run(RE, wait_one, hw.det, hw.motor)
 
 
-def test_wait_multiple(fresh_RE):
-    run(fresh_RE, wait_multiple, det, [motor1, motor2])
+def test_wait_multiple(RE, hw):
+    run(RE, wait_multiple, hw.det, [hw.motor1, hw.motor2])
 
 
-def test_hard_pause(fresh_RE):
-    RE = fresh_RE
+def test_hard_pause(RE, hw):
     assert RE.state == 'idle'
-    RE(conditional_pause(det, motor, False, True))
+    with pytest.raises(RunEngineInterrupted):
+        RE(conditional_pause(hw.det, hw.motor, False, True))
     assert RE.state == 'paused'
-    RE.resume()
+    with pytest.raises(RunEngineInterrupted):
+        RE.resume()
     assert RE.state == 'paused'
     RE.abort()
     assert RE.state == 'idle'
 
 
-def test_deferred_pause(fresh_RE):
+def test_deferred_pause(RE):
     # deferred pause should be processed once and then clear
     # (future checkpoints should not trigger another pause)
-    RE = fresh_RE
     assert RE.state == 'idle'
-    RE([Msg('pause', defer=True), Msg('checkpoint'), Msg('checkpoint'),
-        Msg('checkpoint')])
+    with pytest.raises(RunEngineInterrupted):
+        RE([Msg('pause', defer=True), Msg('checkpoint'), Msg('checkpoint'),
+            Msg('checkpoint')])
     assert RE.state == 'paused'
     RE.resume()
     assert RE.state == 'idle'
 
 
-def test_deferred_pause1(fresh_RE):
+def test_deferred_pause1(RE):
     # deferred pause should never be processed, being superceded by a hard
     # pause
-    RE = fresh_RE
-    RE([Msg('pause', defer=True), Msg('pause', defer=False),
-        Msg('checkpoint')])
+    with pytest.raises(RunEngineInterrupted):
+        RE([Msg('pause', defer=True), Msg('pause', defer=False),
+            Msg('checkpoint')])
     assert RE.state == 'paused'
     RE.resume()
     assert RE.state == 'idle'
 
 
-def test_deferred_pause2(fresh_RE):
-    RE = fresh_RE
-    RE([Msg('pause', defer=True), Msg('checkpoint'), Msg('pause', defer=True),
-        Msg('checkpoint')])
+def test_deferred_pause2(RE):
+    with pytest.raises(RunEngineInterrupted):
+        RE([Msg('pause', defer=True), Msg('checkpoint'), Msg('pause', defer=True),
+            Msg('checkpoint')])
+    assert RE.state == 'paused'
+    with pytest.raises(RunEngineInterrupted):
+        RE.resume()
     assert RE.state == 'paused'
     RE.resume()
-    assert RE.state == 'paused'
-    RE.resume()
     assert RE.state == 'idle'
 
 
-def test_hard_pause_no_checkpoint(fresh_RE):
-    RE = fresh_RE
+def test_hard_pause_no_checkpoint(RE):
     assert RE.state == 'idle'
-    RE([Msg('clear_checkpoint'), Msg('pause', False)]),
-    assert RE.state == 'idle'
-
-
-def test_deferred_pause_no_checkpoint(fresh_RE):
-    RE = fresh_RE
-    assert RE.state == 'idle'
-    RE([Msg('clear_checkpoint'), Msg('pause', True)])
+    with pytest.raises(RunEngineInterrupted):
+        RE([Msg('clear_checkpoint'), Msg('pause', False)]),
     assert RE.state == 'idle'
 
 
-def test_pause_from_outside(fresh_RE):
-    RE = fresh_RE
+def test_deferred_pause_no_checkpoint(RE):
+    assert RE.state == 'idle'
+    with pytest.raises(RunEngineInterrupted):
+        RE([Msg('clear_checkpoint'), Msg('pause', True)])
+    assert RE.state == 'idle'
+
+
+def test_pause_from_outside(RE):
     assert RE.state == 'idle'
 
     def local_pause():
         RE.request_pause()
 
     RE.loop.call_later(1, local_pause)
-    RE(checkpoint_forever())
+    with pytest.raises(RunEngineInterrupted):
+        RE(checkpoint_forever())
     assert RE.state == 'paused'
 
     # Cue up a second pause requests in 2 seconds.
     RE.loop.call_later(2, local_pause)
-    RE.resume()
+    with pytest.raises(RunEngineInterrupted):
+        RE.resume()
     assert RE.state == 'paused'
 
     RE.abort()
     assert RE.state == 'idle'
 
 
-def test_simple_scan_saving(fresh_RE):
-    run(fresh_RE, simple_scan_saving, det, motor)
+def test_simple_scan_saving(RE, hw):
+    run(RE, simple_scan_saving, hw.det, hw.motor)
 
 
 def print_event_time(name, doc):
     print('===== EVENT TIME:', doc['time'], '=====')
 
 
-def test_calltime_subscription(fresh_RE):
-    RE = fresh_RE
+def test_calltime_subscription(RE, hw):
     assert RE.state == 'idle'
-    RE(simple_scan_saving(det, motor), subs={'event': print_event_time})
+    RE(simple_scan_saving(hw.det, hw.motor), {'event': print_event_time})
     assert RE.state == 'idle'
 
 
-def test_stateful_subscription(fresh_RE):
-    RE = fresh_RE
+def test_stateful_subscription(RE, hw):
     assert RE.state == 'idle'
-    token = RE.subscribe('event', print_event_time)
-    RE(simple_scan_saving(det, motor))
+    token = RE.subscribe(print_event_time, 'event')
+    RE(simple_scan_saving(hw.det, hw.motor))
     RE.unsubscribe(token)
     assert RE.state == 'idle'
 
 
-def test_live_plotter(fresh_RE):
-    RE = fresh_RE
+def test_live_plotter(RE, hw):
     RE.ignore_callback_exceptions = False
     try:
         import matplotlib.pyplot as plt
@@ -185,7 +183,7 @@ def test_live_plotter(fresh_RE):
 
     my_plotter = LivePlot('det', 'motor')
     assert RE.state == 'idle'
-    RE(stepscan(det, motor), subs={'all': my_plotter})
+    RE(stepscan(hw.det, hw.motor), {'all': my_plotter})
     assert RE.state == 'idle'
     xlen = len(my_plotter.x_data)
     assert xlen > 0
@@ -194,45 +192,45 @@ def test_live_plotter(fresh_RE):
     RE.ignore_callback_exceptions = True
 
 
-def test_sample_md_dict_requirement(fresh_RE):
-    RE = fresh_RE
+def test_sample_md_dict_requirement(RE, hw):
     # We avoid a json ValidationError and make a user-friendly ValueError.
     with pytest.raises(ValueError):
-        RE(simple_scan(motor), sample=1)
-    RE(simple_scan(motor), sample={'number': 1})  # should not raise
-    RE(simple_scan(motor), sample='label')  # should not raise
+        RE(simple_scan(hw.motor), sample=1)
+    RE(simple_scan(hw.motor), sample={'number': 1})  # should not raise
+    RE(simple_scan(hw.motor), sample='label')  # should not raise
 
 
-def test_md_dict(fresh_RE):
-    _md({}, fresh_RE)
+def test_md_dict(RE, hw):
+    _md({}, RE, hw)
 
 
-def test_md_historydict(fresh_RE):
+def test_md_historydict(RE, hw):
     try:
         import historydict
     except ImportError as ie:
         pytest.skip('Skipping test because historydict cannot be imported. '
                     'Error was {}'.format(ie))
-    _md(historydict.HistoryDict(':memory:'), fresh_RE)
+    _md(historydict.HistoryDict(':memory:'), RE, hw)
 
 
-def _md(md, RE):
+def _md(md, RE, hw):
     RE.ignore_callback_exceptions = False
 
     # Check persistence.
-    scan = simple_scan(motor)
+    scan = simple_scan(hw.motor)
     RE(scan, project='sitting')
     # 'project' should not persist
-    scan = simple_scan(motor)
-    RE(scan, subs={'start': [validate_dict_cb_opposite('project')]})
+    scan = simple_scan(hw.motor)
+    RE(scan, {'start': [validate_dict_cb_opposite('project')]})
     # ...unless we add it to RE.md
     RE.md['project'] = 'sitting'
-    scan = simple_scan(motor)
-    RE(scan, subs={'start': [validate_dict_cb('project', 'sitting')]})
+    scan = simple_scan(hw.motor)
+    RE(scan, {'start': [validate_dict_cb('project', 'sitting')]})
     # new values to 'project' passed in the call override the value in md
-    scan = simple_scan(motor)
-    RE(scan, project='standing',
-       subs={'start': [validate_dict_cb('project', 'standing')]})
+    scan = simple_scan(hw.motor)
+    RE(scan,
+       {'start': [validate_dict_cb('project', 'standing')]},
+       project='standing')
     # ...but they do not update the value in md
     assert RE.md['project'] == 'sitting'
 
@@ -250,32 +248,29 @@ def validate_dict_cb_opposite(key):
     return callback
 
 
-def test_simple_fly(fresh_RE):
-    RE = fresh_RE
-    mm = MockFlyer('wheeeeee', det, motor, -1, 1, 15, RE.loop)
-    RE(fly_gen(mm))
-    assert mm._future.done()
+def test_simple_fly(RE, hw):
+    hw.flyer1.loop = RE.loop
+    RE(fly_gen(hw.flyer1))
+    assert hw.flyer1._future.done()
 
 
-def test_list_of_msgs(fresh_RE):
-    RE = fresh_RE
+def test_list_of_msgs(RE, hw):
     # smoke tests checking that RunEngine accepts a plain list of Messages
-    RE([Msg('open_run'), Msg('set', motor, 5), Msg('close_run')])
+    RE([Msg('open_run'), Msg('set', hw.motor, 5), Msg('close_run')])
 
 
-def test_suspend(fresh_RE):
-    RE = fresh_RE
+def test_suspend(RE, hw):
     ev = asyncio.Event(loop=RE.loop)
 
     test_list = [
         Msg('open_run'),
         Msg('checkpoint'),
         Msg('sleep', None, .2),
-        Msg('set', motor, 5),
-        Msg('trigger', det),
+        Msg('set', hw.motor, 5),
+        Msg('trigger', hw.det),
         Msg('create'),
-        Msg('read', motor),
-        Msg('read', det),
+        Msg('read', hw.motor),
+        Msg('read', hw.det),
         Msg('save'),
         Msg('close_run'),
     ]
@@ -298,15 +293,14 @@ def test_suspend(fresh_RE):
     # grab the start time
     start = ttime.time()
     # run, this will not return until it is done
-    RE(test_list, subs={'event': ev_cb})
+    RE(test_list, {'event': ev_cb})
     # check to make sure it took long enough
     assert out[0]['time'] - start > 1.1
 
     assert RE.state == 'idle'
 
 
-def test_pause_resume(fresh_RE):
-    RE = fresh_RE
+def test_pause_resume(RE):
     ev = asyncio.Event(loop=RE.loop)
 
     def done():
@@ -325,7 +319,8 @@ def test_pause_resume(fresh_RE):
     RE.loop.call_later(1.1, sim_kill)
     RE.loop.call_later(2, done)
 
-    RE(scan)
+    with pytest.raises(RunEngineInterrupted):
+        RE(scan)
     assert RE.state == 'paused'
     mid = ttime.time()
     RE.resume()
@@ -336,8 +331,7 @@ def test_pause_resume(fresh_RE):
     assert stop - start > 2
 
 
-def test_pause_abort(fresh_RE):
-    RE = fresh_RE
+def test_pause_abort(RE):
     ev = asyncio.Event(loop=RE.loop)
 
     def done():
@@ -356,7 +350,8 @@ def test_pause_abort(fresh_RE):
     RE.loop.call_later(.2, sim_kill)
     RE.loop.call_later(1, done)
 
-    RE(scan)
+    with pytest.raises(RunEngineInterrupted):
+        RE(scan)
     assert RE.state == 'paused'
     mid = ttime.time()
     RE.abort()
@@ -368,8 +363,7 @@ def test_pause_abort(fresh_RE):
     assert stop - start < 1
 
 
-def test_abort(fresh_RE):
-    RE = fresh_RE
+def test_abort(RE):
     ev = asyncio.Event(loop=RE.loop)
 
     def done():
@@ -387,7 +381,8 @@ def test_abort(fresh_RE):
     RE.loop.call_later(.1, sim_kill)
     RE.loop.call_later(.2, sim_kill)
     RE.loop.call_later(.3, done)
-    RE(scan)
+    with pytest.raises(RunEngineInterrupted):
+        RE(scan)
     stop = ttime.time()
 
     RE.loop.run_until_complete(ev.wait())
@@ -397,36 +392,35 @@ def test_abort(fresh_RE):
     assert RE.state == 'idle'
 
 
-def test_rogue_sigint(fresh_RE):
-    RE = fresh_RE
+def test_rogue_sigint(RE):
 
     def bad_scan():
         yield Msg('open_run')
         yield Msg('checkpoint')
         raise KeyboardInterrupt()
 
-    RE(bad_scan())
+    with pytest.raises(RunEngineInterrupted):
+        RE(bad_scan())
     assert RE.state == 'idle'
 
 
-def test_seqnum_nonrepeated(fresh_RE):
-    RE = fresh_RE
+def test_seqnum_nonrepeated(RE, hw):
 
     def gen():
         yield Msg('open_run')
         yield Msg('create')
-        yield Msg('set', motor, 1)
-        yield Msg('read', motor)
+        yield Msg('set', hw.motor, 1)
+        yield Msg('read', hw.motor)
         yield Msg('save')
         yield Msg('checkpoint')
         yield Msg('create')
-        yield Msg('set', motor, 2)
-        yield Msg('read', motor)
+        yield Msg('set', hw.motor, 2)
+        yield Msg('read', hw.motor)
         yield Msg('save')
         yield Msg('pause')
         yield Msg('create')
-        yield Msg('set', motor, 3)
-        yield Msg('read', motor)
+        yield Msg('set', hw.motor, 3)
+        yield Msg('read', hw.motor)
         yield Msg('save')
         yield Msg('close_run')
 
@@ -436,34 +430,32 @@ def test_seqnum_nonrepeated(fresh_RE):
         seq_nums.append(doc['seq_num'])
 
     RE.verbose = True
-    RE(gen(), {'event': f})
+
+    with pytest.raises(RunEngineInterrupted):
+        RE(gen(), {'event': f})
+
     print("RESUMING!!!!")
     RE.resume()
     assert seq_nums == [1, 2, 2, 3]
 
 
-def test_duplicate_keys(fresh_RE):
-    RE = fresh_RE
+def test_duplicate_keys(RE, hw):
     # two detectors, same data keys
-    det1 = SynGauss('det', motor, 'motor', center=0, Imax=1, sigma=1)
-    det2 = SynGauss('det', motor, 'motor', center=0, Imax=1, sigma=1)
 
     def gen():
         yield(Msg('open_run'))
         yield(Msg('create'))
-        yield(Msg('trigger', det1))
-        yield(Msg('trigger', det2))
-        yield(Msg('read', det1))
-        yield(Msg('read', det2))
+        yield(Msg('trigger', hw.det))
+        yield(Msg('trigger', hw.identical_det))
+        yield(Msg('read', hw.det))
+        yield(Msg('read', hw.identical_det))
         yield(Msg('save'))
 
     with pytest.raises(ValueError):
         RE(gen())
 
 
-def test_illegal_sequences(fresh_RE):
-    RE = fresh_RE
-
+def test_illegal_sequences(RE, hw):
     def gen1():
         # two 'create' msgs in a row
         yield(Msg('open_run'))
@@ -483,20 +475,30 @@ def test_illegal_sequences(fresh_RE):
         yield(Msg('close_run'))
 
     with pytest.raises(IllegalMessageSequence):
-        RE(gen1())
+        RE(gen2())
 
     def gen3():
         # 'configure' after 'create', before 'save'
         yield(Msg('open_run'))
         yield(Msg('create'))
-        yield(Msg('configure', motor, {}))
+        yield(Msg('configure', hw.motor, {}))
 
     with pytest.raises(IllegalMessageSequence):
         RE(gen3())
 
+    def gen4():
+        # two 'drop' msgs in a row
+        yield(Msg('open_run'))
+        yield(Msg('create'))
+        yield(Msg('drop'))
+        yield(Msg('drop'))
+        yield(Msg('close_run'))
 
-def test_new_ev_desc(fresh_RE):
-    RE = fresh_RE
+    with pytest.raises(IllegalMessageSequence):
+        RE(gen4())
+
+
+def test_new_ev_desc(RE, hw):
     descs = []
 
     def collect_descs(name, doc):
@@ -506,11 +508,11 @@ def test_new_ev_desc(fresh_RE):
         # configure between two events -> two descs
         yield(Msg('open_run'))
         yield(Msg('create'))
-        yield(Msg('read', motor))
+        yield(Msg('read', hw.motor))
         yield(Msg('save'))
-        yield(Msg('configure', motor, {}))
+        yield(Msg('configure', hw.motor, {}))
         yield(Msg('create'))
-        yield(Msg('read', motor))
+        yield(Msg('read', hw.motor))
         yield(Msg('save'))
         yield(Msg('close_run'))
 
@@ -522,13 +524,13 @@ def test_new_ev_desc(fresh_RE):
         # configure between two events and explicitly before any events
         # -> two descs
         yield(Msg('open_run'))
-        yield(Msg('configure', motor, {}))
+        yield(Msg('configure', hw.motor, {}))
         yield(Msg('create'))
-        yield(Msg('read', motor))
+        yield(Msg('read', hw.motor))
         yield(Msg('save'))
-        yield(Msg('configure', motor, {}))
+        yield(Msg('configure', hw.motor, {}))
         yield(Msg('create'))
-        yield(Msg('read', motor))
+        yield(Msg('read', hw.motor))
         yield(Msg('save'))
         yield(Msg('close_run'))
 
@@ -539,12 +541,12 @@ def test_new_ev_desc(fresh_RE):
     def gen3():
         # configure once before any events -> one desc
         yield(Msg('open_run'))
-        yield(Msg('configure', motor, {}))
+        yield(Msg('configure', hw.motor, {}))
         yield(Msg('create'))
-        yield(Msg('read', motor))
+        yield(Msg('read', hw.motor))
         yield(Msg('save'))
         yield(Msg('create'))
-        yield(Msg('read', motor))
+        yield(Msg('read', hw.motor))
         yield(Msg('save'))
         yield(Msg('close_run'))
 
@@ -553,9 +555,7 @@ def test_new_ev_desc(fresh_RE):
     assert len(descs) == 1
 
 
-def test_clear_checkpoint(fresh_RE):
-    RE = fresh_RE
-
+def test_clear_checkpoint(RE):
     bad_plan = [Msg('checkpoint'),
                 Msg('clear_checkpoint'),
                 Msg('pause'),
@@ -563,7 +563,8 @@ def test_clear_checkpoint(fresh_RE):
     good_plan = [Msg('pause')]
     fine_plan = [Msg('clear_checkpoint')]
 
-    RE(good_plan)
+    with pytest.raises(RunEngineInterrupted):
+        RE(good_plan)
     assert RE.state == 'paused'
     RE.stop()
 
@@ -571,20 +572,20 @@ def test_clear_checkpoint(fresh_RE):
     assert RE.state == 'idle'
 
     # this should raise an attribute error if the last entry in the plan
-    # is passed to the run engine
-    RE(bad_plan)
+    # is passed to the run engine (but that should not happen because it should
+    # die when it hits the 'pause' and has no checkpoint)
+    with pytest.raises(RunEngineInterrupted):
+        RE(bad_plan)
     assert RE.state == 'idle'
 
 
-def test_interruption_exception(fresh_RE):
-    RE = fresh_RE
-
+def test_interruption_exception(RE):
     with pytest.raises(RunEngineInterrupted):
-        RE([Msg('checkpoint'), Msg('pause')], raise_if_interrupted=True)
+        RE([Msg('checkpoint'), Msg('pause')])
     RE.stop()
 
 
-def test_failed_status_object(fresh_RE):
+def test_failed_status_object(RE):
     try:
         from ophyd import StatusBase
     except ImportError:
@@ -593,12 +594,12 @@ def test_failed_status_object(fresh_RE):
     class failer:
         def set(self, inp):
             st = StatusBase()
-            fresh_RE.loop.call_later(1, lambda: st._finished(success=False))
+            RE.loop.call_later(1, lambda: st._finished(success=False))
             return st
 
         def trigger(self):
             st = StatusBase()
-            fresh_RE.loop.call_later(1, lambda: st._finished(success=False))
+            RE.loop.call_later(1, lambda: st._finished(success=False))
             return st
 
         def stop(self, *, success=False):
@@ -606,17 +607,15 @@ def test_failed_status_object(fresh_RE):
 
     ff = failer()
     with pytest.raises(FailedStatus):
-        fresh_RE([Msg('set', ff, None, group='a'),
+        RE([Msg('set', ff, None, group='a'),
                   Msg('wait', None, group='a')])
 
     with pytest.raises(FailedStatus):
-        fresh_RE([Msg('trigger', ff, group='a'),
+        RE([Msg('trigger', ff, group='a'),
                   Msg('wait', None, group='a')])
 
 
-def test_rewindable_by_default(fresh_RE):
-    RE = fresh_RE
-
+def test_rewindable_by_default(RE):
     class Sentinel(Exception):
         pass
 
@@ -624,7 +623,8 @@ def test_rewindable_by_default(fresh_RE):
         yield Msg('pause')
         raise Sentinel
 
-    RE(plan())
+    with pytest.raises(RunEngineInterrupted):
+        RE(plan())
     assert RE.state == 'paused'
     with pytest.raises(Sentinel):
         RE.resume()
@@ -633,42 +633,31 @@ def test_rewindable_by_default(fresh_RE):
         yield Msg('clear_checkpoint')
         yield Msg('pause')
 
-    RE(plan())  # cannot pause
+    with pytest.raises(RunEngineInterrupted):
+        RE(plan())  # cannot pause
     assert RE.state == 'idle'
 
 
-def test_pickling_examples():
-    try:
-        import dill
-    except ImportError:
-        raise pytest.skip('requires dill')
-    dill.loads(dill.dumps(det))
-    dill.loads(dill.dumps(motor))
-    dill.loads(dill.dumps(flyer1))
-
-
-def test_sync_trigger_delay(motor_det):
-    motor, det = motor_det
-
+def test_sync_trigger_delay(hw):
     def _time_test(f, t, *args, **kwargs):
         start = ttime.time()
-        f(*args, **kwargs)
+        st = f(*args, **kwargs)
+        while not st.done:
+            ttime.sleep(0.01)
         end = ttime.time()
         assert (end - start) > t
 
-    motor._fake_sleep = .5
-    det.exposure_time = .5
+    hw.motor.delay = .5
+    hw.det.exposure_time = .5
+    assert hw.det.exposure_time == .5
 
-    _time_test(motor.set, .5, 1)
-    _time_test(det.trigger, .5)
+    _time_test(hw.motor.set, .5, 1)
+    _time_test(hw.det.trigger, .5)
 
 
-def test_async_trigger_delay(motor_det, fresh_RE):
-    RE = fresh_RE
-
-    motor, det = motor_det
-    motor.loop = RE.loop
-    det.loop = RE.loop
+def test_async_trigger_delay(RE, hw):
+    hw.motor.loop = RE.loop
+    hw.det.loop = RE.loop
 
     def _time_test(f, t, *args, **kwargs):
         start = ttime.time()
@@ -676,23 +665,20 @@ def test_async_trigger_delay(motor_det, fresh_RE):
         end = ttime.time()
         assert (end - start) > t
 
-    motor._fake_sleep = .5
-    det.exposure_time = .5
+    hw.motor.delay = .5
+    hw.det.exposure_time = .5
 
-    _time_test(bp.trigger, .5, det, wait=True)
-    _time_test(bp.abs_set, .5, motor, 1, wait=True)
+    _time_test(bps.trigger, .5, hw.det, wait=True)
+    _time_test(bps.abs_set, .5, hw.motor, 1, wait=True)
 
 
-def test_fs_reader(db):
-    fs = db.fs
-    fs.register_handler('RWFS_NPY', ReaderWithFSHandler)
-    det = ReaderWithFileStore('det',
-                              {'img': lambda: np.array(np.ones((10, 10)))},
-                              fs=fs)
+def test_reg_reader(hw, db):
+    hw.img.reg = db.reg
+    det = hw.img
     det.stage()
     det.trigger()
     reading = det.read().copy()
     det.unstage()
     datum_id = reading['img']['value']
-    arr = fs.retrieve(datum_id)
+    arr = db.reg.retrieve(datum_id)
     assert_array_equal(np.ones((10, 10)), arr)

@@ -2,93 +2,53 @@ language: python
 sudo: false
 env:
   global:
-    BUILD_DOCS_BRANCH: master
-    DOCS_SUBDIR: doc/
-    TARGET_DEV_SUBDIR: bluesky/
-    HTML_SUBDIR: build/html
-    DOCS_CONDA_DEPS: "bluesky"
-    DOCS_PIP_DEPS: "tqdm"
+    - secure: "UC5rEkKAKQHvpCojJAedrx1aVsplZ0xOq5xdFME3UxrKDOsihRIDBYV6YOnpDcWVxzI3iZAJOJG1rNqMZ/4pOnI/DQ5n2nCIbqZlhPh6xPbr//g88Y3dlQifPWbC6pqmh+WJCfde99lYNDI2XauD4AvRARI9MnRP9vGF0gyTbUMeA0ybLdXScawnhL48Gh7nj64R7e0F1SgF1iEXaU0LvWUW2UK9yIg/kqWfL0XKpgpvxcy0n+VGe9gbwiA70F3nd7iZ/aM7K1MRiLeppCbj3xlLwGE4mw6svF5uim6oYZoDp0si70Ux2yw7TNOYpn82dTBIq1KU59jGUyP/rH/nx0erPzCUJFak8YQTSrbhO08u/baRt5Qb0KWfqGJZcHzPknRC66PzI47zO5ol9qvnIo68xfuIrlJZRhTF7ewNWzmJP5MeJ85mgoQSTmZYyCgFTYDcPdoePerhjBepYngvT1EzS9BPTuUXhStH7lRgbriGVreOQ9bDvW5hTb/n9CKmI/XhQBOGy7T1HYAaIP1N+rlQw0lmp2uYIvZ53wGjqoKB+yLBpAAzXPBbK3sjDtuquou/jEqvyJnL9/VEbohPfIK3AlTTC0zIDi5QZq/h4zqMIKOybd3jmvT4P+Pvy8YGolXtlV6P/erA05GAOXijs/pki/BVcGsHNNjr1xRE0qU="
 
 cache:
   directories:
     - $HOME/.cache/pip
     - $HOME/.cache/matplotlib
 
-services:
-  - mongodb
-addons:
-  apt:
-    sources:
-    - mongodb-3.2-precise
-    packages:
-    - mongodb-org-server
-
 matrix:
+  fast_finish: true
   include:
-    - python: 3.4
-      env: BUILD_DOCS=false
     - python: 3.5
-      env: BUILD_DOCS=true
+    - python: 3.6
+      env: BUILD_DOCS=1
+    - python: nightly
+  allow_failures:
+    - python: nightly
 
 before_install:
-  - git clone https://github.com/NSLS-II/nsls2-ci --branch master --single-branch ~/ci_scripts
   - "/sbin/start-stop-daemon --start --quiet --pidfile /tmp/custom_xvfb_99.pid --make-pidfile --background --exec /usr/bin/Xvfb -- :99 -ac -screen 0 1280x1024x16"
   - "export DISPLAY=:99.0"
-  - if [ ${TRAVIS_PYTHON_VERSION:0:1} == "2" ]; then wget http://repo.continuum.io/miniconda/Miniconda-3.5.5-Linux-x86_64.sh -O miniconda.sh; else wget http://repo.continuum.io/miniconda/Miniconda3-3.5.5-Linux-x86_64.sh -O miniconda.sh; fi
-  - chmod +x miniconda.sh
-  - ./miniconda.sh -b -p /home/travis/mc
-  - export PATH=/home/travis/mc/bin:$PATH
-  - conda config --set show_channel_urls True
-  - conda config --set always_yes True
-  - export MDS_HOST=localhost
-  - export MDS_DATABASE=test
-  - export MDS_TIMEZONE=US/Eastern
-  - mkdir -p /home/travis/.config/metadatastore
-  - 'echo ''port: 27017'' > /home/travis/.config/metadatastore/connection.yml'
-  - export FS_HOST=localhost
-  - export FS_DATABASE=test
-  - mkdir -p /home/travis/.config/filestore
-  - 'echo ''port: 27017'' > /home/travis/.config/filestore/connection.yml'
-
 
 install:
   - export GIT_FULL_HASH=`git rev-parse HEAD`
-  - conda create -n testenv python=$TRAVIS_PYTHON_VERSION scipy matplotlib numpy h5py -c conda-forge -c defaults --override-channels
-  - conda install -n testenv nose jsonschema traitlets pytest coverage pip databroker ophyd historydict boltons doct pyepics super_state_machine xray-vision lmfit jinja2 icu pyzmq mongoquery dill -c lightsource2 -c conda-forge -c soft-matter
-  - source activate testenv
-  - 'pip install https://github.com/NSLS-II/event-model/zipball/master#egg=event_model'
-  - conda remove metadatastore databroker filestore
-  - 'pip install https://github.com/NSLS-II/databroker/zipball/master#egg=databroker'
-  - 'pip install https://github.com/NSLS-II/filestore/zipball/master#egg=filestore'
-  - 'pip install https://github.com/NSLS-II/metadatastore/zipball/master#egg=metadatastore'
-  - 'pip install https://github.com/NSLS-II/portable-mds/zipball/master#egg=portable_mds'
+  - pip install -r requirements.txt
+  - pip install -r dev-requirements.txt
   - pip install codecov
   - python setup.py install
   # Need to clean the python build directory (and other cruft) or pytest is
   # going to find the build directory and get confused why there are two sets
   # of every test file
-  - python -c "from filestore import utils, conf; utils.install_sentinels(conf.connection_config, 1)"
+  - git clean -xfd
   # make sure the sqlite file exists to avoid race conditions
   - python -c "from bluesky.utils import get_history; get_history()"
-  - git clean -xfd
 
 script:
   - coverage run run_tests.py
   - coverage report -m
+  - set -e
+  # Build docs.
   - |
-    if [ $BUILD_DOCS == true ]; then
-      conda install --no-deps -c conda-forge/label/rc matplotlib  # mpl 2.x
-      source ~/ci_scripts/make-docs.sh
+    if [ $BUILD_DOCS ]; then
+      pushd doc
+      make html
+      popd
+      # Publish docs.
+      doctr deploy --deploy-repo NSLS-II/NSLS-II.github.io --deploy-branch-name master bluesky
     fi
 
 after_success:
   - codecov
-  - |
-    if [[ $TRAVIS_PULL_REQUEST == false && $TRAVIS_REPO_SLUG == 'NSLS-II/bluesky' && $BUILD_DOCS == true && $TRAVIS_BRANCH == 'master' ]]; then
-      echo "Adding encrypted deployment key for uploading docs"
-      openssl aes-256-cbc -K $encrypted_5e70d93e51c3_key -iv $encrypted_5e70d93e51c3_iv -in bluesky-docs-deploy.enc -out bluesky-docs-deploy -d
-      eval `ssh-agent -s`
-      chmod 600 bluesky-docs-deploy
-      ssh-add bluesky-docs-deploy
-      source ~/ci_scripts/push-docs.sh
-    fi

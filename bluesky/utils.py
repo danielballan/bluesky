@@ -1,6 +1,7 @@
 from collections import namedtuple
 import asyncio
 import os
+import sys
 import signal
 import operator
 import uuid
@@ -16,7 +17,18 @@ import numpy as np
 from cycler import cycler
 import logging
 import datetime
-from functools import wraps
+from functools import wraps, partial
+import threading
+import time
+from tqdm import tqdm
+from tqdm._utils import _environ_cols_wrapper, _term_move_up, _unicode
+import warnings
+try:
+    # cytools is a drop-in replacement for toolz, implemented in Cython
+    from cytools import groupby
+except ImportError:
+    from toolz import groupby
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,19 +43,23 @@ class Msg(namedtuple('Msg_base', ['command', 'obj', 'args', 'kwargs'])):
             self.command, self.obj, self.args, self.kwargs)
 
 
-class NoReplayAllowed(Exception):
+class RunEngineControlException(Exception):
     pass
 
 
-class RequestAbort(Exception):
+class RequestAbort(RunEngineControlException):
     pass
 
 
-class RequestStop(Exception):
+class RequestStop(RunEngineControlException):
     pass
 
 
 class RunEngineInterrupted(Exception):
+    pass
+
+
+class NoReplayAllowed(Exception):
     pass
 
 
@@ -681,14 +697,43 @@ def get_history():
 _QT_KICKER_INSTALLED = {}
 _NB_KICKER_INSTALLED = {}
 
+def install_kicker(loop=None, update_rate=0.03):
+    """
+    Install a periodic callback to integrate drawing and asyncio event loops.
 
-def install_qt_kicker(loop=None):
-    """Install a periodic callback to integrate qt and asyncio event loops
+    This dispatches to :func:`install_qt_kicker` or :func:`install_nb_kicker`
+    depending on the current matplotlib backend.
 
-    If a version of the qt bindings are not already imported, this function
+    Parameters
+    ----------
+    loop : event loop, optional
+    update_rate : number
+        Seconds between periodic updates. Default is 0.03.
+    """
+    import matplotlib
+    backend = matplotlib.get_backend()
+    if backend == 'nbAgg':
+        install_nb_kicker(loop=loop, update_rate=update_rate)
+    elif backend in ('Qt4Agg', 'Qt5Agg'):
+        install_qt_kicker(loop=loop, update_rate=update_rate)
+    else:
+        raise NotImplementedError("The matplotlib backend {} is not yet "
+                                  "supported.".format(backend))
+
+
+def install_qt_kicker(loop=None, update_rate=0.03):
+    """Install a periodic callback to integrate Qt and asyncio event loops.
+
+    If a version of the Qt bindings are not already imported, this function
     will do nothing.
 
     It is safe to call this function multiple times.
+
+    Parameters
+    ----------
+    loop : event loop, optional
+    update_rate : number
+        Seconds between periodic updates. Default is 0.03.
     """
     if loop is None:
         loop = asyncio.get_event_loop()
@@ -718,19 +763,22 @@ def install_qt_kicker(loop=None):
         _draw_all()
 
         qApp.processEvents()
-        loop.call_later(0.03, _qt_kicker)
+        loop.call_later(update_rate, _qt_kicker)
 
     _QT_KICKER_INSTALLED[loop] = loop.call_soon(_qt_kicker)
 
 
-def install_nb_kicker(loop=None):
+def install_nb_kicker(loop=None, update_rate=0.03):
     """
-    The RunEngine Event Loop interferes with the qt event loop. Here we
-    kick it to keep it going.
+    Install a periodic callback to integrate ipykernel and asyncio event loops.
 
-    This works with the notebook, where `install_qt_kicker` does not.
+    It is safe to call this function multiple times.
 
-    Calling this function multiple times has no effect.
+    Parameters
+    ----------
+    loop : event loop, optional
+    update_rate : number
+        Seconds between periodic updates. Default is 0.03.
     """
     import matplotlib
     if loop is None:
@@ -746,7 +794,7 @@ def install_nb_kicker(loop=None):
             if f_mgr.canvas.figure.stale:
                 f_mgr.canvas.draw()
 
-        loop.call_later(0.03, _nbagg_kicker)
+        loop.call_later(update_rate, _nbagg_kicker)
 
     _NB_KICKER_INSTALLED[loop] = loop.call_soon(_nbagg_kicker)
 
@@ -878,7 +926,7 @@ def ensure_uid(doc_or_uid):
 
 
 def ts_msg_hook(msg):
-    t = '{:%H:%m:%S}'.format(datetime.datetime.now())
+    t = '{:%H:%M:%S.%f}'.format(datetime.datetime.now())
     msg_fmt = '{: <17s} -> {!s: <15s} args: {}, kwargs: {}'.format(
         msg.command,
         msg.obj.name if hasattr(msg.obj, 'name') else msg.obj,
@@ -917,3 +965,289 @@ def make_decorator(wrapper):
             return dec_inner
         return dec
     return dec_outer
+
+
+def apply_to_dict_recursively(d, f):
+    """Recursively apply function to a document
+
+    This modifies the dict in place and returns it.
+
+    Parameters
+    ----------
+    d: dict
+        e.g. event_model Document
+    f: function
+       any func to be performed on d recursively
+    """
+    for key, val in d.items():
+        if hasattr(val, 'items'):
+            d[key] = apply_to_dict_recursively(d=val, f=f)
+        d[key] = f(val)
+    return d
+
+
+class ProgressBar:
+    def __init__(self, status_objs, delay_draw=0.2):
+        """
+        Represent status objects with a progress bars.
+
+        Parameters
+        ----------
+        status_objs : list
+            Status objects
+        delay_draw : float, optional
+            To avoid flashing progress bars that will complete quickly after
+            they are displayed, delay drawing until the progress bar has been
+            around for awhile. Default is 0.2 seconds.
+        """
+        self.meters = []
+        self.status_objs = []
+        # Determine terminal width.
+        self.ncols = _environ_cols_wrapper()(sys.stdout) or 79
+        self.fp = sys.stdout
+        self.creation_time = time.time()
+        self.delay_draw = delay_draw
+        self.drawn = False
+        self.done = False
+        self.lock = threading.RLock()
+
+        # If the ProgressBar is not finished before the delay_draw time but
+        # never again updated after the delay_draw time, we need to draw it
+        # once.
+        if delay_draw:
+            threading.Thread(target=self._ensure_draw, daemon=True).start()
+
+        # Create a closure over self.update for each status object that
+        # implemets the 'watch' method.
+        for st in status_objs:
+            with self.lock:
+                if hasattr(st, 'watch') and not st.done:
+                    pos = len(self.meters)
+                    self.meters.append('')
+                    self.status_objs.append(st)
+                    st.watch(partial(self.update, pos))
+
+    def update(self, pos, *,
+               name=None,
+               current=None, initial=None, target=None,
+               unit='units', precision=None,
+               fraction=None,
+               time_elapsed=None, time_remaining=None):
+        if all(x is not None for x in (current, initial, target)):
+            # Display a proper progress bar.
+            total = round(_L2norm(target, initial), precision or 3)
+            n = round(_L2norm(current, initial), precision or 3)
+            # Compute this only if the status object did not provide it.
+            if time_elapsed is None:
+                time_elapsed = time.time() - self.creation_time
+            # TODO Account for 'fraction', which might in some special cases
+            # differ from the naive computation above.
+            # TODO Account for 'time_remaining' which might in some special
+            # cases differ from the naive computaiton performed by
+            # format_meter.
+            meter = tqdm.format_meter(n=n, total=total, elapsed=time_elapsed,
+                                      unit=unit,
+                                      prefix=name,
+                                      ncols=self.ncols)
+        else:
+            # Simply display completeness.
+            if name is None:
+                name = ''
+            if self.status_objs[pos].done:
+                meter = name + ' [Complete.]'
+            else:
+                meter = name + ' [In progress. No progress bar available.]'
+            meter += ' ' * (self.ncols - len(meter))
+            meter = meter[:self.ncols]
+
+        self.meters[pos] = meter
+        self.draw()
+
+    def draw(self):
+        with self.lock:
+            if (time.time() - self.creation_time) < self.delay_draw:
+                return
+            if self.done:
+                return
+            for meter in self.meters:
+                tqdm.status_printer(self.fp)(meter)
+                self.fp.write('\n')
+            self.fp.write(_unicode(_term_move_up() * len(self.meters)))
+            self.drawn = True
+
+    def _ensure_draw(self):
+        # Ensure that the progress bar is drawn at least once after the delay.
+        time.sleep(self.delay_draw)
+        with self.lock:
+            if (not self.done) and (not self.drawn):
+                self.draw()
+
+    def clear(self):
+        with self.lock:
+            self.done = True
+            if self.drawn:
+                for meter in self.meters:
+                    self.fp.write('\r')
+                    self.fp.write(' ' * self.ncols)
+                    self.fp.write('\r')
+                    self.fp.write('\n')
+                self.fp.write(_unicode(_term_move_up() * len(self.meters)))
+
+
+class ProgressBarManager:
+    def __init__(self, delay_draw=0.2):
+        self.delay_draw = delay_draw
+        self.pbar = None
+
+    def __call__(self, status_objs_or_none):
+        if status_objs_or_none is not None:
+            # Start a new ProgressBar.
+            if self.pbar is not None:
+                warnings.warn("Previous ProgressBar never competed.")
+                self.pbar.clear()
+            self.pbar = ProgressBar(status_objs_or_none,
+                                    delay_draw=self.delay_draw)
+        else:
+            # Clean up an old one.
+            if self.pbar is None:
+                warnings.warn("There is no Progress bar to clean up.")
+            else:
+                self.pbar.clear()
+                self.pbar = None
+
+
+def _L2norm(x, y):
+    "works on (3, 5) and ((0, 3), (4, 0))"
+    return np.sqrt(np.sum((np.asarray(x) - np.asarray(y))**2))
+
+
+def merge_axis(objs):
+    '''Merge possibly related axis
+
+    This function will take a list of objects and separate it into
+
+     - list of completely independent objects (most settable things and
+       detectors) that do not have coupled motion.
+     - list of devices who have children who are coupled (PseudoPositioner
+       ducked by looking for 'RealPosition' as an attribute)
+
+    Both of these lists will only contain objects directly passed in
+    in objs
+
+     - map between parents and objects passed in.  Each value
+       of the map is a map between the strings
+       {'real', 'pseudo', 'independent'} and a list of objects.  All
+       of the objects in the (doubly nested) map are in the input.
+
+    Parameters
+    ----------
+    objs : Iterable[OphydObj]
+        The input devices
+
+    Returns
+    -------
+    independent_objs : List[OphydObj]
+        Independent 'simple' axis
+
+    complex_objs : List[PseudoPositioner]
+        Independent objects which have interdependent children
+
+    coupled : Dict[PseudoPositioner, Dict[str, List[OphydObj]]]
+        Mapping of interdependent axis passed in.
+    '''
+    def get_parent(o):
+        return getattr(o, 'parent')
+
+    independent_objs = set()
+    maybe_coupled = set()
+    complex_objs = set()
+    for o in objs:
+        parent = o.parent
+        if hasattr(o, 'RealPosition'):
+            complex_objs.add(o)
+        elif (parent is not None and hasattr(parent, 'RealPosition')):
+            maybe_coupled.add(o)
+        else:
+            independent_objs.add(o)
+    coupled = {}
+
+    for parent, children in groupby(get_parent, maybe_coupled).items():
+        real_p = set(parent.real_positioners)
+        pseudo_p = set(parent.pseudo_positioners)
+        type_map = {'real': [], 'pseudo': [], 'unrelated': []}
+        for c in children:
+            if c in real_p:
+                type_map['real'].append(c)
+            elif c in pseudo_p:
+                type_map['pseudo'].append(c)
+            else:
+                type_map['unrelated'].append(c)
+        coupled[parent] = type_map
+
+    return (independent_objs, complex_objs, coupled)
+
+
+def merge_cycler(cyc):
+    """Specify movements of sets of interdependent axes atomically.
+
+    Inspect the keys of ``cyc`` (which are Devices) to indentify those
+    which are interdependent (part of the same
+    PseudoPositioner) and merge those independent entries into
+    a single entry.
+
+    This also validates that the user has not passed conflicting
+    interdependent axis (such as a real and pseudo axis from the same
+    PseudoPositioner)
+
+    Parameters
+    ----------
+    cyc : Cycler[OphydObj, Sequence]
+       A cycler as would be passed to :func:`scan_nd`
+
+    Returns
+    -------
+    Cycler[OphydObj, Sequence]
+       A cycler as would be passed to :func:`scan_nd` with the same
+       or fewer keys than the input.
+
+    """
+    def my_name(obj):
+        """Get the attribute name of this device on its parent Device
+        """
+        parent = obj.parent
+        return next(iter([nm for nm in parent.component_names
+                          if getattr(parent, nm) is obj]))
+
+    io, co, gb = merge_axis(cyc.keys)
+
+    # only simple non-coupled objects, declare victory and bail!
+    if len(co) == len(gb) == 0:
+        return cyc
+
+    input_data = cyc.by_key()
+    output_data = [cycler(i, input_data[i]) for i in io | co]
+
+    for parent, type_map in gb.items():
+
+        if parent in co and (type_map['pseudo'] or type_map['real']):
+            raise ValueError("A PseudoPostiioner and its children were both "
+                             "passed in.  We do not yet know how to merge "
+                             "these inputs, failing.")
+
+        if type_map['real'] and type_map['pseudo']:
+            raise ValueError("Passed in a mix of real and pseudo axis.  "
+                             "Can not cope, failing")
+        pseudo_axes = type_map['pseudo']
+        if len(pseudo_axes) > 1:
+            p_cyc = reduce(operator.add,
+                           (cycler(my_name(c), input_data[c])
+                            for c in type_map['pseudo']))
+            output_data.append(cycler(parent, list(p_cyc)))
+        elif len(pseudo_axes) == 1:
+            c, = pseudo_axes
+            output_data.append(cycler(c, input_data[c]))
+
+        for c in type_map['real'] + type_map['unrelated']:
+            output_data.append(cycler(c, input_data[c]))
+
+    return reduce(operator.add, output_data)

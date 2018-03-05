@@ -1,7 +1,11 @@
 from __future__ import (absolute_import, division, print_function)
+import glob
 import versioneer
 
 import setuptools
+
+with open('requirements.txt') as f:
+    requirements = f.read().split()
 
 setuptools.setup(
     name='bluesky',
@@ -13,12 +17,12 @@ setuptools.setup(
     url="https://github.com/NSLS-II/bluesky",
     packages=setuptools.find_packages(),
     package_data={'bluesky': ['schema/*.json']},
-    install_requires=['jsonschema', 'traitlets', 'cycler',
-                      'numpy', 'matplotlib', 'super_state_machine',
-                      'historydict'],
+    scripts=glob.glob('scripts/*'),
+    install_requires=requirements,
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Programming Language :: Python :: 3.4",
         "Programming Language :: Python :: 3.5",
+        "Programming Language :: Python :: 3.6",
     ],
 )

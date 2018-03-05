@@ -1,53 +1,62 @@
-from collections import deque, defaultdict
+from collections import defaultdict
 import pytest
-from bluesky import Msg
-from bluesky.examples import (det, det1, det2, Mover, NullStatus, motor,
-                              SynGauss, Reader)
-from bluesky.plans import (create, save, read, monitor, unmonitor, null,
-                           abs_set, rel_set, trigger, sleep, wait, checkpoint,
-                           clear_checkpoint, pause, deferred_pause, kickoff,
-                           collect, configure, stage, unstage, subscribe,
-                           unsubscribe, open_run, close_run, wait_for, mv,
-                           subs_context, run_context, event_context,
-                           baseline_context, monitor_context,
-                           stage_context, planify, finalize_wrapper,
-                           fly_during_wrapper, reset_positions_wrapper,
-                           monitor_during_wrapper,
-                           lazily_stage_wrapper, relative_set_wrapper,
-                           subs_wrapper, trigger_and_read, stop,
-                           repeater, caching_repeater, count, Count, Scan,
-                           fly_during_decorator, subs_decorator,
-                           monitor_during_decorator,
-                           inject_md_wrapper, finalize_decorator)
-from bluesky.spec_api import configure_count_time_wrapper
+from bluesky import Msg, RunEngineInterrupted
+from bluesky.plan_stubs import (
+    create,
+    save,
+    drop,
+    read,
+    monitor,
+    unmonitor,
+    null,
+    abs_set,
+    rel_set,
+    trigger,
+    sleep,
+    wait,
+    checkpoint,
+    clear_checkpoint,
+    pause,
+    deferred_pause,
+    kickoff,
+    collect,
+    configure,
+    stage,
+    unstage,
+    subscribe,
+    unsubscribe,
+    open_run,
+    close_run,
+    wait_for,
+    mv,
+    mvr,
+    trigger_and_read,
+    stop,
+    repeater,
+    caching_repeater,
+    repeat,
+    one_1d_step,
+    one_nd_step)
+from bluesky.preprocessors import (
+    finalize_wrapper,
+    fly_during_wrapper,
+    reset_positions_wrapper,
+    monitor_during_wrapper,
+    lazily_stage_wrapper,
+    relative_set_wrapper,
+    subs_wrapper,
+    fly_during_decorator,
+    subs_decorator,
+    monitor_during_decorator,
+    inject_md_wrapper,
+    finalize_decorator,
+    configure_count_time_wrapper)
+
+from bluesky.plans import count, scan, rel_scan, inner_product_scan
+
+import bluesky.plans as bp
 
 from bluesky.utils import all_safe_rewind
-
-
-class DummyMover:
-    def __init__(self, name):
-        self._value = 0
-        self.name = name
-
-    def describe(self):
-        return {self.name: {}}
-
-    def set(self, value):
-        self._value = value
-        return NullStatus()
-
-    def read_configuration(self):
-        return {}
-
-    def describe_configuration(self):
-        return {}
-
-    def read(self):
-        return {self.name: {'value': self._value, 'timestamp': 0}}
-
-
-def cb(name, doc):
-    pass
 
 
 @pytest.mark.parametrize(
@@ -55,25 +64,26 @@ def cb(name, doc):
     [(create, (), {}, [Msg('create', name='primary')]),
      (create, ('custom_name',), {}, [Msg('create', name='custom_name')]),
      (save, (), {}, [Msg('save')]),
-     (read, (det,), {}, [Msg('read', det)]),
+     (drop, (), {}, [Msg('drop')]),
+     (read, ('det',), {}, [Msg('read', 'det')]),
      (monitor, ('foo',), {}, [Msg('monitor', 'foo', name=None)]),
      (monitor, ('foo',), {'name': 'c'}, [Msg('monitor', 'foo', name='c')]),
      (unmonitor, ('foo',), {}, [Msg('unmonitor', 'foo')]),
      (null, (), {}, [Msg('null')]),
      (stop, ('foo',), {}, [Msg('stop', 'foo')]),
-     (abs_set, (det, 5), {}, [Msg('set', det, 5, group=None)]),
-     (abs_set, (det, 5), {'group': 'A'}, [Msg('set', det, 5, group='A')]),
-     (abs_set, (det, 5), {'group': 'A', 'wait': True},
-      [Msg('set', det, 5, group='A'), Msg('wait', None, group='A')]),
-     (rel_set, (det, 5), {}, [Msg('read', det),
-                              Msg('set', det, 5, group=None)]),
-     (rel_set, (det, 5), {'group': 'A'}, [Msg('read', det),
-                                          Msg('set', det, 5, group='A')]),
-     (rel_set, (det, 5), {'group': 'A', 'wait': True},
-      [Msg('read', det), Msg('set', det, 5, group='A'),
+     (abs_set, ('det', 5), {}, [Msg('set', 'det', 5, group=None)]),
+     (abs_set, ('det', 5), {'group': 'A'}, [Msg('set', 'det', 5, group='A')]),
+     (abs_set, ('det', 5), {'group': 'A', 'wait': True},
+      [Msg('set', 'det', 5, group='A'), Msg('wait', None, group='A')]),
+     (rel_set, ('det', 5), {}, [Msg('read', 'det'),
+                                Msg('set', 'det', 5, group=None)]),
+     (rel_set, ('det', 5), {'group': 'A'}, [Msg('read', 'det'),
+                                            Msg('set', 'det', 5, group='A')]),
+     (rel_set, ('det', 5), {'group': 'A', 'wait': True},
+      [Msg('read', 'det'), Msg('set', 'det', 5, group='A'),
        Msg('wait', None, group='A')]),
-     (trigger, (det,), {}, [Msg('trigger', det, group=None)]),
-     (trigger, (det,), {'group': 'A'}, [Msg('trigger', det, group='A')]),
+     (trigger, ('det',), {}, [Msg('trigger', 'det', group=None)]),
+     (trigger, ('det',), {'group': 'A'}, [Msg('trigger', 'det', group='A')]),
      (sleep, (2,), {}, [Msg('sleep', None, 2)]),
      (wait, (), {}, [Msg('wait', None, group=None)]),
      (wait, ('A',), {}, [Msg('wait', None, group='A')]),
@@ -85,86 +95,58 @@ def cb(name, doc):
      (kickoff, ('foo',), {'custom': 5}, [Msg('kickoff', 'foo',
                                              group=None, custom=5)]),
      (collect, ('foo',), {}, [Msg('collect', 'foo', stream=False)]),
-     (configure, (det, 1), {'a': 2}, [Msg('configure', det, 1, a=2)]),
-     (stage, (det,), {}, [Msg('stage', det)]),
-     (unstage, (det,), {}, [Msg('unstage', det)]),
-     (subscribe, ('all', 'func_placeholder'), {}, [Msg('subscribe', None, 'all',
-                                                       'func_placeholder')]),
+     (configure, ('det', 1), {'a': 2}, [Msg('configure', 'det', 1, a=2)]),
+     (stage, ('det',), {}, [Msg('stage', 'det')]),
+     (unstage, ('det',), {}, [Msg('unstage', 'det')]),
+     (subscribe, ('all', 'func_placeholder'), {}, [Msg('subscribe', None,
+                                                       'func_placeholder',
+                                                       'all')]),
      (unsubscribe, (1,), {}, [Msg('unsubscribe', None, token=1)]),
      (open_run, (), {}, [Msg('open_run')]),
      (open_run, (), {'md': {'a': 1}}, [Msg('open_run', a=1)]),
-     (close_run, (), {}, [Msg('close_run')]),
-     (wait_for, (['fut1', 'fut2'],), {}, [Msg('wait_for', None, ['fut1', 'fut2'])]),
-    ])
-def test_stub_plans(plan, plan_args, plan_kwargs, msgs):
+     (close_run, (), {}, [Msg('close_run', reason=None, exit_status=None)]),
+     (wait_for, (['fut1', 'fut2'],), {}, [Msg('wait_for', None,
+                                              ['fut1', 'fut2'])]),
+     ]
+)
+def test_stub_plans(plan, plan_args, plan_kwargs, msgs, hw):
+    # de-reference
+    plan_args = tuple(getattr(hw, v, v) if isinstance(v, str) else v
+                      for v in plan_args)
+    plan_kwargs = {k: getattr(hw, v, v) if isinstance(v, str) else v
+                   for k, v in plan_kwargs.items()}
+    msgs = [Msg(m.command,
+                getattr(hw, m.obj, m.obj) if isinstance(m.obj, str) else m.obj,
+                *m.args,
+                **m.kwargs) for m in msgs]
     assert list(plan(*plan_args, **plan_kwargs)) == msgs
 
 
-def test_mv():
+def test_mv(hw):
     # special-case mv because the group is not configurable
-    actual = list(mv(det1, 1, det2, 2))
-    expected = [Msg('set', det1, 1, group=None),
-                Msg('set', det2, 2, group=None),
-                Msg('wait', None, group=None)]
+    # move motors first to ensure that movement is absolute, not relative
+    actual = list(mv(hw.motor1, 1, hw.motor2, 2))
     strip_group(actual)
-    strip_group(expected)
-    assert actual == expected
+    for msg in actual[:2]:
+        msg.command == 'set'
+    assert set([msg.obj for msg in actual[:2]]) == set([hw.motor1, hw.motor2])
+    assert actual[2] == Msg('wait', None)
 
 
-@pytest.mark.parametrize(
-    'cm,args,kwargs,before,after',
-    [(baseline_context, ([det1, det2],), {},
-      [Msg('trigger', det1),
-       Msg('trigger', det2),
-       Msg('wait'),
-       Msg('create', None, name='baseline'),
-       Msg('read', det1),
-       Msg('read', det2),
-       Msg('save')],
-      [Msg('trigger', det1),
-       Msg('trigger', det2),
-       Msg('wait'),
-       Msg('create', None, name='baseline'),
-       Msg('read', det1),
-       Msg('read', det2),
-       Msg('save')]),
-     (stage_context, ([det1, det2],), {},
-      [Msg('stage', det1),
-       Msg('stage', det2)],
-      [Msg('unstage', det2),
-       Msg('unstage', det1)]),
-     (subs_context, ({'all': [cb]},), {},
-      [Msg('subscribe', None, 'all', cb)],
-      [Msg('unsubscribe', None, token=None)]),
-     (monitor_context, (['sig'],), {},
-      list(monitor('sig')),
-      list(unmonitor('sig'))),
-     (event_context, (), {},
-      [Msg('create', name='primary')],
-      [Msg('save')]),
-     (run_context, (), {'md': {'a': 1}},
-      [Msg('open_run', a=1)],
-      [Msg('close_run')]),
-    ])
-def test_plan_contexts(cm, args, kwargs, before, after):
-    @planify
-    def plan():
-        ps = deque()
-        with cm(ps, *args, **kwargs):
-            ps.append(['sentinel'])
-        return ps
-
-    actual_before = []
-    actual_after = []
-    target = actual_before
-    for msg in plan():
-        if msg == 'sentinel':
-            target = actual_after
-            continue
-        msg.kwargs.pop('group', None)
-        target.append(msg)
-    assert actual_before == before
-    assert actual_after == after
+def test_mvr(RE, hw):
+    # special-case mv because the group is not configurable
+    # move motors first to ensure that movement is relative, not absolute
+    hw.motor1.set(10)
+    hw.motor2.set(10)
+    actual = []
+    RE.msg_hook = lambda msg: actual.append(msg)
+    RE(mvr(hw.motor1, 1, hw.motor2, 2))
+    actual = list(mv(hw.motor1, 1, hw.motor2, 2))
+    strip_group(actual)
+    for msg in actual[:2]:
+        msg.command == 'set'
+    assert set([msg.obj for msg in actual[:2]]) == set([hw.motor1, hw.motor2])
+    assert actual[2] == Msg('wait', None)
 
 
 def strip_group(plan):
@@ -172,7 +154,9 @@ def strip_group(plan):
         msg.kwargs.pop('group', None)
 
 
-def test_monitor_during_wrapper():
+def test_monitor_during_wrapper(hw):
+    det = hw.det
+
     def plan():
         # can't use 2 * [Msg('open_run'), Msg('null'), Msg('close_run')]
         # because plan_mutator sees the same ids twice and skips them
@@ -195,19 +179,18 @@ def test_monitor_during_wrapper():
     assert processed_plan == expected
 
 
-def test_descriptor_layout_from_monitor(fresh_RE):
+def test_descriptor_layout_from_monitor(RE, hw):
     collector = []
-    det = Reader('det', {k: lambda: i for i, k in enumerate('abcd')},
-                 read_attrs=list('ab'), conf_attrs=list('cd'))
+    det = hw.rand
 
     def collect(name, doc):
         if name == 'descriptor':
             collector.append(doc)
 
-    fresh_RE([Msg('open_run'),
-              Msg('monitor', det, name=det.name),
-              Msg('unmonitor', det),
-              Msg('close_run')], collect)
+    RE([Msg('open_run'),
+        Msg('monitor', det, name=det.name),
+        Msg('unmonitor', det),
+        Msg('close_run')], collect)
 
     descriptor, = collector
     assert descriptor['object_keys'] == {det.name: list(det.describe().keys())}
@@ -246,7 +229,9 @@ def test_fly_during():
     assert processed_plan == expected
 
 
-def test_lazily_stage():
+def test_lazily_stage(hw):
+    det1, det2 = hw.det1, hw.det2
+
     def plan():
         yield from [Msg('read', det1), Msg('read', det1), Msg('read', det2)]
 
@@ -271,7 +256,7 @@ def test_subs():
     processed_plan = list(subs_wrapper(plan('test_arg', test_kwarg='val'),
                                        {'all': cb}))
 
-    expected = [Msg('subscribe', None, 'all', cb),
+    expected = [Msg('subscribe', None, cb, 'all'),
                 Msg('null', None, 'test_arg', test_kwarg='val'),
                 Msg('unsubscribe', token=None)]
 
@@ -293,7 +278,9 @@ def test_md():
     assert processed_plan == expected
 
 
-def test_finalize():
+def test_finalize(hw):
+    det = hw.det
+
     def plan():
         yield from [Msg('null')]
 
@@ -335,7 +322,8 @@ def test_finalize():
     assert processed_plan == expected
 
     # or func that returns list
-    processed_plan = list(finalize_decorator(lambda: [Msg('read', det)])(plan)())
+    processed_plan = list(finalize_decorator(
+        lambda: [Msg('read', det)])(plan)())
     expected = [Msg('null'), Msg('read', det)]
     assert processed_plan == expected
 
@@ -348,7 +336,9 @@ def test_finalize():
         list(finalize_decorator(cleanup_plan())(plan)())
 
 
-def test_finalize_runs_after_error(fresh_RE):
+def test_finalize_runs_after_error(RE, hw):
+    det = hw.det
+
     def plan():
         yield from [Msg('null')]
         raise Exception
@@ -358,19 +348,19 @@ def test_finalize_runs_after_error(fresh_RE):
     def accumulator(msg):
         msgs.append(msg)
 
-    fresh_RE.msg_hook = accumulator
+    RE.msg_hook = accumulator
     try:
-        fresh_RE(finalize_wrapper(plan(), [Msg('read', det)]))
+        RE(finalize_wrapper(plan(), [Msg('read', det)]))
     except Exception:
-        pass # swallow the Exception; we are interested in msgs below
+        pass  # swallow the Exception; we are interested in msgs below
 
     expected = [Msg('null'), Msg('read', det)]
 
     assert msgs == expected
 
 
-def test_reset_positions(fresh_RE):
-    motor = Mover('a', {'a': lambda x: x}, {'x': 0})
+def test_reset_positions(RE, hw):
+    motor = hw.motor
     motor.set(5)
 
     msgs = []
@@ -378,12 +368,12 @@ def test_reset_positions(fresh_RE):
     def accumulator(msg):
         msgs.append(msg)
 
-    fresh_RE.msg_hook = accumulator
+    RE.msg_hook = accumulator
 
     def plan():
         yield from (m for m in [Msg('set', motor, 8)])
 
-    fresh_RE(reset_positions_wrapper(plan()))
+    RE(reset_positions_wrapper(plan()))
 
     expected = [Msg('set', motor, 8), Msg('set', motor, 5), Msg('wait')]
 
@@ -393,8 +383,8 @@ def test_reset_positions(fresh_RE):
     assert msgs == expected
 
 
-def test_reset_positions_no_position_attr(fresh_RE):
-    motor = DummyMover('motor')
+def test_reset_positions_no_position_attr(RE, hw):
+    motor = hw.motor_no_pos
     motor.set(5)
 
     msgs = []
@@ -402,12 +392,12 @@ def test_reset_positions_no_position_attr(fresh_RE):
     def accumulator(msg):
         msgs.append(msg)
 
-    fresh_RE.msg_hook = accumulator
+    RE.msg_hook = accumulator
 
     def plan():
         yield from (m for m in [Msg('set', motor, 8)])
 
-    fresh_RE(reset_positions_wrapper(plan()))
+    RE(reset_positions_wrapper(plan()))
 
     expected = [Msg('read', motor),
                 Msg('set', motor, 8), Msg('set', motor, 5), Msg('wait')]
@@ -418,8 +408,8 @@ def test_reset_positions_no_position_attr(fresh_RE):
     assert msgs == expected
 
 
-def test_relative_set(fresh_RE):
-    motor = Mover('a', {'a': lambda x: x}, {'x': 0})
+def test_relative_set(RE, hw):
+    motor = hw.motor
     motor.set(5)
 
     msgs = []
@@ -427,12 +417,12 @@ def test_relative_set(fresh_RE):
     def accumulator(msg):
         msgs.append(msg)
 
-    fresh_RE.msg_hook = accumulator
+    RE.msg_hook = accumulator
 
     def plan():
         yield from (m for m in [Msg('set', motor, 8)])
 
-    fresh_RE(relative_set_wrapper(plan()))
+    RE(relative_set_wrapper(plan()))
 
     expected = [Msg('set', motor, 13)]
 
@@ -442,8 +432,8 @@ def test_relative_set(fresh_RE):
     assert msgs == expected
 
 
-def test_relative_set_no_position_attr(fresh_RE):
-    motor = DummyMover('motor')
+def test_relative_set_no_position_attr(RE, hw):
+    motor = hw.motor_no_pos
     motor.set(5)
 
     msgs = []
@@ -451,12 +441,12 @@ def test_relative_set_no_position_attr(fresh_RE):
     def accumulator(msg):
         msgs.append(msg)
 
-    fresh_RE.msg_hook = accumulator
+    RE.msg_hook = accumulator
 
     def plan():
         yield from (m for m in [Msg('set', motor, 8)])
 
-    fresh_RE(relative_set_wrapper(plan()))
+    RE(relative_set_wrapper(plan()))
 
     expected = [Msg('read', motor),
                 Msg('set', motor, 13)]
@@ -467,19 +457,9 @@ def test_relative_set_no_position_attr(fresh_RE):
     assert msgs == expected
 
 
-def test_configure_count_time(fresh_RE):
-    class DummySignal:
-        def put(self, val):
-            pass
-
-        def get(self):
-            return 3
-
-        def set(self, val):
-            return NullStatus()
-
-    det = DummyMover('det')
-    det.count_time = DummySignal()
+def test_configure_count_time(RE, hw):
+    det = hw.det_with_count_time
+    det.count_time.put(3)
 
     def plan():
         yield from (m for m in [Msg('read', det)])
@@ -489,9 +469,9 @@ def test_configure_count_time(fresh_RE):
     def accumulator(msg):
         msgs.append(msg)
 
-    fresh_RE.msg_hook = accumulator
+    RE.msg_hook = accumulator
 
-    fresh_RE(configure_count_time_wrapper(plan(), 7))
+    RE(configure_count_time_wrapper(plan(), 7))
 
     expected = [Msg('set', det.count_time, 7), Msg('wait'),
                 Msg('read', det), Msg('set', det.count_time, 3),
@@ -533,7 +513,27 @@ def test_caching_repeater():
     assert next(p) == 1
 
 
-def test_trigger_and_read():
+def test_repeat(RE):
+    # Check if lists and callables both work
+    messages = [1, 2, 3]
+
+    def plan():
+        yield from messages
+
+    num = 3
+    expected = [Msg('checkpoint'), 1, 2, 3] * num
+    assert list(repeat(plan, num=num)) == expected
+
+
+def test_repeat_using_RE(RE):
+    def plan():
+        yield Msg('open_run')
+        yield Msg('close_run')
+    RE(repeat(plan, 2))
+
+
+def test_trigger_and_read(hw):
+    det = hw.det
     msgs = list(trigger_and_read([det]))
     expected = [Msg('trigger', det), Msg('wait'),
                 Msg('create', name='primary'), Msg('read', det), Msg('save')]
@@ -549,34 +549,34 @@ def test_trigger_and_read():
     assert msgs == expected
 
 
-def test_count_delay_argument():
+def test_count_delay_argument(hw):
     # num=7 but delay only provides 5 entries
     with pytest.raises(ValueError):
         # count raises ValueError when delay generator is expired
-        list(count([det], num=7, delay=(2**i for i in range(5))))
+        list(count([hw.det], num=7, delay=(2**i for i in range(5))))
 
     # num=6 with 5 delays between should product 6 readings
-    msgs = count([det], num=6, delay=(2**i for i in range(5)))
+    msgs = count([hw.det], num=6, delay=(2**i for i in range(5)))
     read_count = len([msg for msg in msgs if msg.command == 'read'])
     assert read_count == 6
 
     # num=5 with 5 delays should produce 5 readings
-    msgs = count([det], num=5, delay=(2**i for i in range(5)))
+    msgs = count([hw.det], num=5, delay=(2**i for i in range(5)))
     read_count = len([msg for msg in msgs if msg.command == 'read'])
     assert read_count == 5
 
     # num=4 with 5 delays should produce 4 readings
-    msgs = count([det], num=4, delay=(2**i for i in range(5)))
+    msgs = count([hw.det], num=4, delay=(2**i for i in range(5)))
     read_count = len([msg for msg in msgs if msg.command == 'read'])
     assert read_count == 4
 
     # num=None with 5 delays should produce 6 readings
-    msgs = count([det], num=None, delay=(2**i for i in range(5)))
+    msgs = count([hw.det], num=None, delay=(2**i for i in range(5)))
     read_count = len([msg for msg in msgs if msg.command == 'read'])
     assert read_count == 6
 
 
-def test_plan_md(fresh_RE):
+def test_plan_md(RE, hw):
     mutable = []
     md = {'color': 'red'}
 
@@ -585,30 +585,31 @@ def test_plan_md(fresh_RE):
 
     # test genereator
     mutable.clear()
-    fresh_RE(count([det], md=md), collector)
+    RE(count([hw.det], md=md), collector)
     assert 'color' in mutable[0]
 
     # test Plan with explicit __init__
     mutable.clear()
-    fresh_RE(Count([det], md=md), collector)
+    RE(bp.count([hw.det], md=md), collector)
     assert 'color' in mutable[0]
 
     # test Plan with implicit __init__ (created via metaclasss)
     mutable.clear()
-    fresh_RE(Scan([det], motor, 1, 2, 2, md=md), collector)
+    RE(bp.scan([hw.det], hw.motor, 1, 2, 2, md=md), collector)
     assert 'color' in mutable[0]
 
 
-def test_infinite_count(fresh_RE):
-    loop = fresh_RE.loop
+def test_infinite_count(RE, hw):
+    loop = RE.loop
 
-    loop.call_later(2, fresh_RE.stop)
+    loop.call_later(2, RE.stop)
     docs = defaultdict(list)
 
     def collector(name, doc):
         docs[name].append(doc)
 
-    fresh_RE(count([det], num=None), collector)
+    with pytest.raises(RunEngineInterrupted):
+        RE(count([hw.det], num=None), collector)
 
     assert len(docs['start']) == 1
     assert len(docs['stop']) == 1
@@ -616,17 +617,51 @@ def test_infinite_count(fresh_RE):
     assert len(docs['event']) > 0
 
 
-def test_no_rewind_device():
-    class FakeSig:
-        def get(self):
-            return False
+def test_no_rewind_device(hw):
+    hw.det.rewindable = hw.bool_sig
 
-    det = SynGauss('det', motor, 'motor', center=0, Imax=1, sigma=1)
-    det.rewindable = FakeSig()
-
-    assert not all_safe_rewind([det])
+    assert not all_safe_rewind([hw.det])
 
 
-def test_monitor(fresh_RE):
-    RE = fresh_RE
-    RE(monitor_during_wrapper(count([det], 5), [det1]))
+def test_monitor(RE, hw):
+    RE(monitor_during_wrapper(count([hw.det], 5), [hw.det1]))
+
+
+def test_per_step(RE, hw):
+    # Check default behavior, using one motor and then two.
+    RE(scan([hw.det], hw.motor, -1, 1, 3, per_step=one_nd_step))
+    RE(scan([hw.det],
+            hw.motor, -1, 1,
+            hw.motor2, -1, 1,
+            3,
+            per_step=one_nd_step))
+    RE(inner_product_scan([hw.det], 3, hw.motor, -1, 1, per_step=one_nd_step))
+    RE(inner_product_scan([hw.det],
+                          3,
+                          hw.motor, -1, 1,
+                          hw.motor2, -1, 1,
+                          per_step=one_nd_step))
+
+    # Check that scan still accepts old one_1d_step signature:
+    RE(scan([hw.det], hw.motor, -1, 1, 3, per_step=one_1d_step))
+    RE(rel_scan([hw.det], hw.motor, -1, 1, 3, per_step=one_1d_step))
+
+    # Test that various error paths include a useful error message identifying
+    # that the problem is with 'per_step':
+
+    # You can't usage one_1d_step signature with more than one motor.
+    with pytest.raises(TypeError) as exc:
+        RE(scan([hw.det],
+                hw.motor, -1, 1,
+                hw.motor2, -1, 1,
+                3,
+                per_step=one_1d_step))
+    assert "Signature of per_step assumes 1D trajectory" in str(exc)
+
+    # The signature must be either like one_1d_step or one_nd_step:
+    def bad_sig(detectors, mtr, step):
+        ...
+
+    with pytest.raises(TypeError) as exc:
+        RE(scan([hw.det], hw.motor, -1, 1, 3, per_step=bad_sig))
+    assert "per_step must be a callable with the signature" in str(exc)

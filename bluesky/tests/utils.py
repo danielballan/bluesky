@@ -1,18 +1,8 @@
 from bluesky.run_engine import RunEngine
+from collections import defaultdict
 import contextlib
 import tempfile
 import sys
-
-
-def setup_test_run_engine():
-    # The metadata configured here used to be required for the RE to be
-    # usable. Now it is all optional, but maintained for legacy reasons.
-    RE = RunEngine()
-    RE.md['owner'] = 'test_owner'
-    RE.md['group'] = 'Grant No. 12345'
-    RE.md['config'] = {'detector_model': 'XYZ', 'pixel_size': 10}
-    RE.md['beamline_id'] = 'test_beamline'
-    return RE
 
 
 @contextlib.contextmanager
@@ -35,3 +25,22 @@ class MsgCollector:
         self.msgs.append(msg)
         if self.msg_hook:
             self.msg_hook(msg)
+
+
+class DocCollector:
+    def __init__(self):
+        self.start = []
+        self.stop = {}
+        self.descriptor = defaultdict(list)
+        self.event = {}
+
+    def insert(self, name, doc):
+        if name == 'start':
+            self.start.append(doc)
+        elif name == 'stop':
+            self.stop[doc['run_start']] = doc
+        elif name == 'descriptor':
+            self.descriptor[doc['run_start']].append(doc)
+            self.event[doc['uid']] = []
+        else:
+            self.event[doc['descriptor']].append(doc)
