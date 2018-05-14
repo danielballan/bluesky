@@ -82,11 +82,12 @@ motors, a shutter motor, an area detector and a point detector:
 
 .. ipython:: python
 
+    import numpy as np
     from ophyd.sim import SynAxis, SynSignal
     motor1 = SynAxis(name='motor1', labels={'motors', 'scan_motors'})
-    motor1 = SynAxis(name='motor2', labels={'motors', 'scan_motors'})
+    motor2 = SynAxis(name='motor2', labels={'motors', 'scan_motors'})
     shutter_motor = SynAxis(name='shutter_motor', labels={'motors', 'shutter_motors'})
-    # create a fake area detector that returns a 10x10 array
+    # create a fake area detector that returns a 2x2 array
     area_detector = SynSignal(func=lambda: np.random.random((2, 2)),
                               name='adet1', labels={'detectors', 'area_detectors'})
     point_detector = SynSignal(func=lambda: np.random.random((1,)),
@@ -144,6 +145,11 @@ If blank, will print all labeled devices.
 .. ipython:: python
 
     %wa
+
+Note: It is possible to give a device more than one label. Thus it is possible
+to have the same device in more than one list when calling ``%wa``. It is up to
+the user to decide whether they want overlapping labels or not.
+
     
 Comparison with SPEC
 ~~~~~~~~~~~~~~~~~~~~
@@ -163,9 +169,10 @@ Taking a reading using ``%ct`` (Pre v1.3.0)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Previously, you could set a default list of detectors and them use ``%ct``
 without any parameters. This behaviour is deprecated. Do not use this:
+
 .. ipython:: python
 
-    BlueskyMagics.detectors = [det1, det2]
+    BlueskyMagics.detectors = [adet1, pointdet1]
     %ct
 
 This is no longer supported.
