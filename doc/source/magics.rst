@@ -41,7 +41,7 @@ For this example we'll use some simulated hardware.
 
 .. ipython:: python
 
-    from ophyd.sim import det1, det2, motor1, motor2
+    from ophyd.sim import motor1, motor2
 
 Moving a Motor
 ~~~~~~~~~~~~~~
@@ -81,15 +81,16 @@ keyword argument. For example, here we initialize five simulated signals: two
 motors, a shutter motor, an area detector and a point detector:
 
 .. ipython:: python
-    from ophyd.sim import SynGauss
+
+    from ophyd.sim import SynAxis, SynSignal
     motor1 = SynAxis(name='motor1', labels={'motors', 'scan_motors'})
     motor1 = SynAxis(name='motor2', labels={'motors', 'scan_motors'})
     shutter_motor = SynAxis(name='shutter_motor', labels={'motors', 'shutter_motors'})
     # create a fake area detector that returns a 10x10 array
-    area_detector = SynSignal(func=lambda: np.array(np.ones((10, 10))),
-                           name='img', labels={'detectors', 'area_detectors'})
-    point_detector = SynSignal(func=lambda: np.array(np.ones((10, 10))),
-                           name='img', labels={'detectors', 'point_detectors'})
+    area_detector = SynSignal(func=lambda: np.random.random((2, 2)),
+                              name='adet1', labels={'detectors', 'area_detectors'})
+    point_detector = SynSignal(func=lambda: np.random.random((1,)),
+                               name='pointdet1', labels={'detectors', 'point_detectors'})
 
 Now we have detectors and motors, with proper labels.
 
