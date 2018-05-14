@@ -172,7 +172,7 @@ without any parameters. This behaviour is deprecated. Do not use this:
 
 .. ipython:: python
 
-    BlueskyMagics.detectors = [adet1, pointdet1]
+    BlueskyMagics.detectors = [area_detector, point_detector]
     %ct
 
 This is no longer supported.
