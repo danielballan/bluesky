@@ -7,7 +7,6 @@ import warnings
 
 from .core import CallbackBase, get_obj_fields
 
-
 class Line(CallbackBase):
     """
     Draw a matplotlib Line Arist update it for each Event.
@@ -333,6 +332,135 @@ class LiveScatter(CallbackBase):
             self.sc.set_clim(*clim)
 
 
+class Scatter(CallbackBase):
+    '''
+    Draw a matplotlib AxesImage artist and update it for each event.
+    The purposes of this callback is to create (on initialization) of a
+    matplotlib scatter image and then update it with new data for every `event`
+    or bulk_event.
+
+    Parameters
+    ----------
+    start_doc: dict
+        not used; accepted and dicarded to satisfy callback_factory API.
+    func : callable
+        This must accept a BulkEvent and return three lists of floats (x
+        co-ordinates, y co-ordinates and scatter position intensity values). 
+        The three lists must contain an equal number of items, but that number
+        is arbitrary. That is, a given document may add one new point, no new 
+        points or multiple new points to the plot.
+    single_func : callback, optional
+        This parameter is available as a perfomrance operation. For most uses,
+        ``func`` is sufficient. This is like ``func``, but it gets an Event
+        instead of a BulkEvent. If ``None`` is given, Events are up-cast into
+        BulkEvents and handed to ``func``.
+    ax : matplotlib Axes, optional.
+        if ``None``, a new Figure and Axes are created.
+    **kwargs
+        Passed through to :meth:`Axes.imshow` to style the AxesImage object.
+        '''
+    def __init__(self, start_doc, func, *,
+                single_func=None, ax=None, **kwargs):
+        self.func = func
+        self.single_func = single_func
+
+        if ax is None:
+            _, ax = plt.subplots()
+        ax.cla()
+        self.ax = ax
+        self._norm = mcolors.Normalize()
+        self._cmap = 'viridis'
+        self.kwargs = kwargs
+        self._lastx = None
+        self._lasty = None
+
+    def bulk_event(self, doc):
+        '''
+        Takes in a bulk_events document and updates x, y, I with the values
+        returned from self.func(doc)
+
+        Parameters
+        ----------
+        doc : dict
+            The bulk event dictionary that contains the 'data' and 'timestamps'
+            associated with the bulk event.
+
+        Returns
+        -------
+        x, y, I : Lists
+            These are lists of x co-ordinate, y co-ordinate and intensity
+            values arising from the bulk event.
+        '''
+        x, y, I = self.func(doc)
+        self._update(x, y, I)
+
+    def event(self, doc):
+        '''
+        Takes in a event documents and updates scatter data with the values
+        returned from self.single_func(doc) or, if it is `None`, self.func(doc)
+
+        Parameters
+        ----------
+        doc : dict
+            The bulk event dictionary that contains the 'data' and 'timestamps'
+            associated with the event.
+
+        Returns
+        -------
+        x, y, I : Lists
+            These are lists of x co-ordinate, y co-ordinate and intensity
+            values arising from the event.
+        '''
+        if self.single_func is not None:
+            x, y, I = self.single_func(doc)
+        else:
+            # Make a BulkEvent from this Event and use func.
+            bulk_event = doc.copy()
+            bulk_event['data'] = {k: np.expand_dims(v, 0)
+                                  for k, v in doc['data'].items()}
+            bulk_event['timestamps'] = {k: np.expand_dims(v, 0)
+                                        for k, v in doc['timestamps'].items()}
+            x, y, I = self.func(bulk_event)
+        self._update(x, y, I)
+
+    def _update(self, x, y, I):
+        '''
+        Updates plot with the values from the lists x, y, I. Draw trajectory.
+        Parameters
+        ----------
+        x, y, I: Lists
+            These are lists of x co-ordinate, y co-ordinate and intensity
+            values arising from the event. The length of all three lists must
+            be the same.
+        '''
+        self.ax.scatter(x, y, c = I, norm=self._norm, cmap=self._cmap,**self.kwargs)
+        if self._lastx is not None:
+            self.ax.plot([self._lastx, x[0]], [self._lasty, y[0]])
+        self.ax.plot(x, y)
+        self._lastx = x[-1]
+        self._lasty = y[-1]
+        plt.show()
+
+
+def event2bulk_event(doc):
+    '''Make a BulkEvent from this Event.
+    Parameters
+    ----------
+    doc : dict
+        The event dictionary that contains the 'data' and 'timestamps'
+        associated with the bulk event.
+    Returns
+    -------
+    bulk_event : dict
+        The bulk event dictionary that contains the 'data' and 'timestamp'
+        associated with the event.
+    '''
+    bulk_event = doc.copy()
+    bulk_event['data'] = {k: np.expand_dims(v, 0)
+                          for k, v in doc['data'].items()}
+    bulk_event['timestamps'] = {k: np.expand_dims(v, 0)
+                                for k, v in doc['timestamps'].items()}
+    return bulk_event
 class LiveMesh(LiveScatter):
     __doc__ = LiveScatter.__doc__
 
@@ -384,7 +512,7 @@ class Grid(CallbackBase):
             _, ax = plt.subplots()
         self.ax = ax
         self.grid_data = np.full(self.shape, np.nan)
-        self.image, = ax.imshow(self.grid_data, **kwargs)
+        self.image = ax.imshow(self.grid_data, **kwargs)
 
     def bulk_events(self, doc):
         '''
@@ -428,7 +556,7 @@ class Grid(CallbackBase):
             x_coords, y_coords, I_vals = self.single_func(doc)
         else:
             bulk_doc = event2bulk_event(doc)
-            x_coords, y_coords, Ivals = self.func(bulk_doc)
+            x_coords, y_coords, I_vals = self.func(bulk_doc)
 
         self._update(x_coords, y_coords, I_vals)
 
@@ -457,6 +585,7 @@ class Grid(CallbackBase):
             return
 
         # Update grid_data and the plot.
+
         self.grid_data[x_coords, y_coords] = I_vals
         self.image.set_array(self.grid_data)
 
@@ -478,7 +607,7 @@ class LiveGrid(CallbackBase):
     raster_shape : tuple
         The (row, col) shape of the raster
 
-    I : str
+    I_field : str
         The field to use for the color of the markers
 
     clim : tuple, optional
@@ -503,14 +632,14 @@ class LiveGrid(CallbackBase):
     --------
     :class:`bluesky.callbacks.LiveScatter`.
     """
-    def __init__(self, raster_shape, I, *,
+    def __init__(self, raster_shape, I_field, *,
                  clim=None, cmap='viridis',
                  xlabel='x', ylabel='y', extent=None, aspect='equal',
                  ax=None):
         if ax is None:
             fig, ax = plt.subplots()
         ax.cla()
-        self.I = I
+        self.I_field = I_field
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
         ax.set_aspect(aspect)
@@ -563,16 +692,22 @@ class LiveGrid(CallbackBase):
         if self.snaking[1] and (pos[0] % 2):
             pos[1] = self.raster_shape[1] - pos[1] - 1
         pos = tuple(pos)
-        I = doc['data'][self.I]
-        self.update(pos, I)
+        I_val = doc['data'][self.I_field]
+        self.update(pos, I_val)
         super().event(doc)
 
-    def update(self, pos, I):
-        self._Idata[pos] = I
+    def update(self, pos, I_val):
+        self._Idata[pos] = I_val
         if self.clim is None:
             self.im.set_clim(np.nanmin(self._Idata), np.nanmax(self._Idata))
 
         self.im.set_array(self._Idata)
+
+
+
+
+
+
 
 
 class LiveRaster(LiveGrid):
