@@ -1558,3 +1558,27 @@ def test_self_describe(RE):
         assert type(RE) is cls
 
     RE(inner())
+
+
+def test_get_event_loop(RE):
+    "Test the 'get_event_loop' command."
+    def inner():
+        loop = yield Msg('get_event_loop')
+        assert RE.loop is loop
+
+    RE(inner())
+
+
+def test_thread_name(RE):
+    "The RunEngine event loop should be on a thread with a given name."
+    from ophyd.status import Status
+
+    class MockDevice:
+        name = "mock_device"
+
+        def trigger(self):
+            assert threading.current_thread().name == "bluesky-run-engine"
+            return Status()
+
+    d = MockDevice()
+    RE([Msg("trigger", d)])

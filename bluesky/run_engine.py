@@ -417,6 +417,7 @@ class RunEngine:
             'close_run': self._close_run,
             'wait_for': self._wait_for,
             'input': self._input,
+            'get_event_loop': self._get_event_loop,
             'install_suspender': self._install_suspender,
             'remove_suspender': self._remove_suspender, }
 
@@ -929,6 +930,14 @@ class RunEngine:
                     if (exc is not None
                             and not isinstance(exc, _RunEnginePanic)):
                         raise exc
+
+    async def _get_event_loop(self, msg):
+        """
+        Expected message object is:
+
+            Msg('get_event_loop', None)
+        """
+        return self.loop
 
     def install_suspender(self, suspender):
         """
@@ -2430,7 +2439,7 @@ def _ensure_event_loop_running(loop):
     This is idempotent: if the loop is already running nothing will be done.
     """
     if not loop.is_running():
-        th = threading.Thread(target=loop.run_forever, daemon=True)
+        th = threading.Thread(target=loop.run_forever, daemon=True, name="bluesky-run-engine")
         th.start()
         _ensure_event_loop_running.loop_to_thread[loop] = th
     else:
